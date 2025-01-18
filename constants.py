@@ -45,3 +45,5 @@ REPLACE 		= r'(^|\S+\s+);;\S+;;(\s+\S+|$)' # ;;word;;
 
 # List of Blacklisted users
 BLACKLIST = []
+
+COMMAND_COOLDOWN = 2  # Cooldown of 2 seconds

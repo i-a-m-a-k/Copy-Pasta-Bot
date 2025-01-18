@@ -131,4 +131,7 @@ def handle_mock_command(reply: discord.MessageReference) -> discord.File:
         return None
         
     image_path = create_mock_image(segments)
-    return discord.File(image_path)
+    discord_file = discord.File(image_path)
+    os.remove(image_path)
+    
+    return discord_file
