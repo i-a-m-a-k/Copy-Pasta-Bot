@@ -69,6 +69,7 @@ HELP_TEXT_MEMES    = '''
 - **forbesify** : Convert text to...
 - **stretch** : Streeeeech aaaaa teeeext
 - **roast <@user>** : Roast a user (No need to reply to message)
+- **flirt <@user>** : Flirt with a user (No need to reply to message)
 - **dream <prompt>** :  Generate an image from Luma AI. (No need to reply to message). _The prompt and the generated image might be logged by Luma AI. The prompt and the generated image with user id are definitely logged by the bot for moderation purposes_
 '''
 

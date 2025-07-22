@@ -1,8 +1,8 @@
-from sqlitedict import SqliteDict
 import constants
-import DatabaseManager
+from DatabaseManager import DatabaseManager
+from Message import Message
 
-def _rename_key(db:DatabaseManager, user:str, key:str, new_key:str, overwrite:bool)->int:
+def _rename_key(db:DatabaseManager, user:str, key:str, new_key:str, overwrite:bool) -> str:
 	user_keys = db.get_user_keys(user)
 	if not user_keys:
 		return constants.EMPTY_LIST

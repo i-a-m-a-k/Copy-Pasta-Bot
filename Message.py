@@ -11,7 +11,7 @@ class Message:
 		self.images = set(self.get_attachments(message_obj, attachment_type='image', check_reference=True))
 		self.videos = set(self.get_attachments(message_obj, attachment_type='video', check_reference=True))
 		self.audios = set(self.get_attachments(message_obj, attachment_type='audio', check_reference=True))
-		
+
 		if len(self.images) == 1 and list(self.images)[0] == self.content:
 			self.content = ''
 
@@ -22,7 +22,7 @@ class Message:
 			self.is_cmd = False
 			self.args = None
 		pass
-	
+
 	def get_content(self, message_obj:discord.Message):
 		if message_obj.content != '': # Normal message
 			return message_obj.content.strip()
@@ -44,7 +44,7 @@ class Message:
 					except AttributeError:
 						continue
 				return '\n'.join(content)
-	
+
 	def get_attachments(self, message_obj:discord.Message, attachment_type:str, check_reference:bool=False):
 		attachments = []
 		if not message_obj:
@@ -56,7 +56,7 @@ class Message:
 		# Add code to read EmbedProxy for `thumbnail` when image is specified
 		if message_obj.embeds and attachment_type != 'audio':
 			attachments += [getattr(embed, attachment_type).url for embed in message_obj.embeds if getattr(embed, attachment_type).__repr__() != 'EmbedProxy()']
-		
+
 		if message_obj.embeds and attachment_type == 'image':
 			attachments += [getattr(embed, 'thumbnail').url for embed in message_obj.embeds if getattr(embed, 'thumbnail').__repr__() != 'EmbedProxy()']
 
@@ -67,5 +67,5 @@ class Message:
 				attachments += self.get_attachments(message_obj.reference.cached_message, attachment_type=attachment_type, check_reference=False)
 			except:
 				pass
-		
+
 		return attachments

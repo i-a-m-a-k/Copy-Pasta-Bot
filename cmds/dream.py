@@ -8,12 +8,79 @@ import argparse
 import shlex
 from io import BytesIO
 import math
+import os
+import csv
+from datetime import datetime
 
 # Dictionary to track user cooldowns
 user_cooldowns = {}
+pending_logs = {}
+
+def log_dream_command(user_id, username, prompt, generation_type, media_url=None, status="success"):
+
+	log_file = "db/dream_logs.csv"
+	
+	timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+	if not media_url:
+		pending_logs[user_id] = (timestamp, user_id, username, prompt, generation_type, None, status)
+		return
+
+	if user_id in pending_logs:
+		del pending_logs[user_id]
+
+	os.makedirs(os.path.dirname(log_file), exist_ok=True)
+
+	file_exists = os.path.isfile(log_file)
+
+	with open(log_file, 'a', newline='', encoding='utf-8') as f:
+		writer = csv.writer(f)
+
+		if not file_exists:
+			writer.writerow(['timestamp', 'user_id', 'username', 'prompt', 'generation_type', 'media_url', 'status'])
+
+		writer.writerow([timestamp, user_id, username, prompt, generation_type, media_url, status])
+
+
+def add_banned_user(user_id, username, prompt):
+	
+	banned_file = "db/dream_banned_users.csv"
+
+	file_exists = os.path.isfile(banned_file)
+	
+	os.makedirs(os.path.dirname(banned_file), exist_ok=True)
+	
+	timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+	
+	with open(banned_file, 'a', newline='', encoding='utf-8') as f:
+		writer = csv.writer(f)
+
+		if not file_exists:
+			writer.writerow(['timestamp', 'user_id', 'username', 'banned_prompt'])
+		
+		writer.writerow([timestamp, user_id, username, prompt])
+
+
+def is_user_banned(user_id):
+	
+	banned_file = "db/dream_banned_users.csv"
+	
+	if not os.path.isfile(banned_file):
+		return False
+	
+	with open(banned_file, 'r', newline='', encoding='utf-8') as f:
+		reader = csv.DictReader(f)
+		for row in reader:
+			if str(row['user_id']) == str(user_id):
+				return True
+	
+	return False
 
 async def handle_dream_command(user, args, message=None):
 	try:
+		if is_user_banned(user.id):
+			return "You are not allowed to use the dream command."
+		
 		# Parse the command arguments
 		parser = argparse.ArgumentParser(add_help=False)
 		parser.add_argument('-v', '--video', action='store_true', help='Generate a video instead of an image')
@@ -40,22 +107,19 @@ async def handle_dream_command(user, args, message=None):
 				prompt = prompt.replace("-i2v", "").replace("--image-to-video", "")
 			prompt = prompt.strip()
 		
+		user_id = user.id
+		is_admin = user_id in do_not_push.LUMA_USERS
+		
+		if not is_admin and (is_video or is_image_to_video):
+			return "Sorry, video and image-to-video generation are admin-only features."
+		
 		# Determine current generation type - combine video and image-to-video into "video"
 		current_generation_type = "video" if (is_video or is_image_to_video) else "image"
-		
-		# Check user permissions
-		user_id = user.id
 		current_time = time.time()
 
-		# Check if user has permission to use the command at all
-		if user_id not in do_not_push.ADMINS:
-			# Get cooldown periods based on generation type
-			if current_generation_type == "video":
-				cooldown_period = 300
-			else:
-				cooldown_period = 60
+		if not is_admin:
+			cooldown_period = 300
 			
-			# Check for cooldowns for the specific generation type they're trying to use
 			if user_id in user_cooldowns and current_generation_type in user_cooldowns[user_id]:
 				last_used = user_cooldowns[user_id][current_generation_type]
 				time_elapsed = current_time - last_used
@@ -63,8 +127,7 @@ async def handle_dream_command(user, args, message=None):
 				
 				if time_remaining > 0:
 					minutes_remaining = math.ceil(time_remaining / 60)
-					generation_display = "video" if current_generation_type == "video" else "image"
-					return f"You're on cooldown for {generation_display} generation for {minutes_remaining} more minute{'s' if minutes_remaining > 1 else ''}. Please try again later."
+					return f"You're on cooldown for image generation for {minutes_remaining} more minute{'s' if minutes_remaining > 1 else ''}. Please try again later."
 			
 			# If we reach here, update the cooldown for the specific type they're using
 			if user_id not in user_cooldowns:
@@ -74,13 +137,18 @@ async def handle_dream_command(user, args, message=None):
 		
 		def upload_image_to_0x0(image_bytes):
 			try:
-				files = {'file': ('image.jpg', image_bytes, 'image/jpeg')}
-				response = requests.post("https://0x0.st", files=files)
-
+				temp_file = BytesIO(image_bytes)
+				files = {'file': ('image.jpg', temp_file, 'application/octet-stream')}
+				
+				headers = {
+					'User-Agent': 'DiscordBotforLuma/1.0 (Discord Image Service)'
+				}
+				
+				response = requests.post("https://0x0.st", files=files, headers=headers)
+				
 				if response.status_code == 200:
-					return response.text.strip()  # The URL of the uploaded image
-				else:
-					return None
+					return response.text.strip()
+				return None
 			except Exception as e:
 				return None
 		
@@ -123,15 +191,25 @@ async def handle_dream_command(user, args, message=None):
 				return "Failed to upload image to 0x0.st. Please try again later."
 		
 		if not prompt and not is_image_to_video:
-			return "Please provide a prompt for generation. Usage: ;;dream <prompt>, ;;dream -v <prompt> for video, or ;;dream -i2v <prompt> to transform an image to video (must reply to a message with an image)"
+			usage_msg = "Please provide a prompt for generation. Usage: ;;dream <prompt>"
+			if is_admin:
+				usage_msg += ", ;;dream -v <prompt> for video, or ;;dream -i2v <prompt> to transform an image to video (must reply to a message with an image)"
+			return usage_msg
 		
 		# Initialize Luma AI client with auth_token
 		client = LumaAI(auth_token=do_not_push.LUMA_API_KEY)
 		
 		# Get specific generation type for display purposes
 		display_generation_type = "image-to-video" if is_image_to_video else ("video" if is_video else "image")
+
+		log_dream_command(
+			user_id=user.id,
+			username=user.name if hasattr(user, 'name') else str(user),
+			prompt=prompt,
+			generation_type=display_generation_type,
+			media_url=None  # URL not available yet
+		)
 		
-		# Initial response to indicate we're working on it
 		initial_response = f"Creating {display_generation_type} for prompt: '{prompt}'... This might take a few minutes."
 		
 		# Create the generation request based on type
@@ -172,7 +250,24 @@ async def handle_dream_command(user, args, message=None):
 			if generation.state == "completed":
 				completed = True
 			elif generation.state == "failed":
-				return f"{display_generation_type.capitalize()} generation failed: {generation.failure_reason}"
+				failure_reason = getattr(generation, 'failure_reason', '')
+				if "moderation" in failure_reason.lower() or "400" in failure_reason:
+					add_banned_user(
+						user_id=user.id,
+						username=user.name if hasattr(user, 'name') else str(user),
+						prompt=prompt
+					)
+					return "Your generation request violated content moderation policies. You have been banned from using the dream command."
+				
+				log_dream_command(
+					user_id=user.id,
+					username=user.name if hasattr(user, 'name') else str(user),
+					prompt=prompt,
+					generation_type=display_generation_type,
+					media_url=None,
+					status="fail: " + failure_reason
+				)
+				return f"{display_generation_type.capitalize()} generation failed: {failure_reason}"
 			
 			# Wait before checking again (longer interval for videos)
 			polling_interval = 5 if (is_video or is_image_to_video) else 3
@@ -180,6 +275,14 @@ async def handle_dream_command(user, args, message=None):
 			polling_count += 1
 			
 		if not completed:
+			log_dream_command(
+				user_id=user.id,
+				username=user.name if hasattr(user, 'name') else str(user),
+				prompt=prompt,
+				generation_type=display_generation_type,
+				media_url=None,
+				status="fail: timeout"
+			)
 			return f"{display_generation_type.capitalize()} generation timed out. Please try again later."
 		
 		# Get the media URL and appropriate file extension
@@ -191,6 +294,15 @@ async def handle_dream_command(user, args, message=None):
 			media_url = generation.assets.image
 			file_extension = "jpg"
 			discord_filename = "dream_result.jpg"
+
+		log_dream_command(
+			user_id=user.id,
+			username=user.name if hasattr(user, 'name') else str(user),
+			prompt=prompt,
+			generation_type=display_generation_type,
+			media_url=media_url,
+			status="success"
+		)
 		
 		# Download the generated content
 		response = requests.get(media_url, stream=True)
@@ -209,4 +321,13 @@ async def handle_dream_command(user, args, message=None):
 		return discord_file
 		
 	except Exception as e:
-		return f"Error generating content: {str(e)}"
+		error_message = str(e)
+		log_dream_command(
+			user_id=user.id,
+			username=user.name if hasattr(user, 'name') else str(user),
+			prompt=prompt if 'prompt' in locals() else "unknown",
+			generation_type=display_generation_type if 'display_generation_type' in locals() else "unknown",
+			media_url=None,
+			status=f"error: {error_message}"
+		)
+		return f"Error generating content: {error_message}"

@@ -1,9 +1,12 @@
 do_not_push.py
 mysqlite.db
+.editorconfig
+
 .venv/
 .git/
 __pycache__/
 ./cmds/__pycache__/
+
 ./db/
 .vscode/
 api_token.py

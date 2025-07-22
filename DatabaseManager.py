@@ -13,13 +13,13 @@ class DatabaseManager:
 			match traceback.extract_stack()[1].name: # function which called this
 				case 'add':
 					return constants.KEY_EXISTS_ADD
-				
+
 				case '_rename_key':
 					return constants.KEY_EXISTS_RENAME
-				
+
 				case '_steal':
 					return constants.KEY_EXISTS_STEAL
-				
+
 				case _:
 					# unreachable?
 					return constants.KEY_EXISTS
@@ -50,7 +50,7 @@ class DatabaseManager:
 			new_db[key] = self.db[key]
 
 		return new_db
-	
+
 	def delete_user(self, user:str) -> bool:
 		try:
 			self.db.pop(user)
@@ -58,6 +58,6 @@ class DatabaseManager:
 		except Error as e:
 			print(e)
 			return False
-		
+
 	def get_users(self) -> list:
 		return self.db.keys()

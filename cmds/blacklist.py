@@ -16,7 +16,7 @@ def _validate_id(func:callable) -> callable:
 			return func(int(user_id[2:-1]))
 		else:
 			return constants.WRONG_ARGS
-	
+
 	return func_wrapper
 
 def is_blacklisted(user_id: int) -> bool:
@@ -28,13 +28,13 @@ def handle_blacklist(user_id: str, args: list) -> str:
 	match args[1]:
 		case 'add':
 			return _blacklist_add(args[2])
-		
+
 		case 'remove':
 			return _blacklist_remove(args[2])
-		
+
 		case 'list':
 			return _blacklist_list()
-		
+
 		case _:
 			return constants.WRONG_ARGS
 
@@ -56,5 +56,5 @@ def _blacklist_remove(user_id_to_unblacklist:int) -> str:
 	do_not_push.BLACKLIST.remove(user_id_to_unblacklist)
 	return constants.UNBLACKLIST_SUCCESS + f'<@{user_id_to_unblacklist}>'
 
-def _blacklist_list() -> str:	
+def _blacklist_list() -> str:
 	return '- ' + '\n- '.join([f'<@{i}>' for i in do_not_push.BLACKLIST]) if do_not_push.BLACKLIST else constants.BLACKLIST_EMPTY

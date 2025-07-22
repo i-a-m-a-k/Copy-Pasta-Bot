@@ -2,7 +2,7 @@ import os
 import random
 import discord
 import constants
-import Message
+from Message import Message
 
 def _get_asset_path(filename: str) -> str:
 	root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -48,7 +48,7 @@ def roast(message: discord.Message, bot_user: discord.ClientUser) -> str:
 	roasts = _get_random_roast(len(target_users))
 
 	# Format the response with the target user mention and the roast
-	# Using discord.utils.escape_markdown to preserve '*' for censoring 
+	# Using discord.utils.escape_markdown to preserve '*' for censoring
 	response = ''
 	for i, user in enumerate(target_users):
 		response += f'{user.mention} {discord.utils.escape_markdown(roasts[i])}\n'
@@ -63,20 +63,20 @@ def roast(message: discord.Message, bot_user: discord.ClientUser) -> str:
 def add_roast(message: Message) -> str:
 	if len(message.args) <= 1:
 		return constants.WRONG_ARGS
-	
+
 	roast = message.content[12:].strip()
 	roasts = _load_roasts()
 
 	if len(roasts) > 0 and roasts[0][:6] == 'Error:':
 		return constants.UNSUCCESSFUL
-	
+
 	if roast not in roasts:
 		roasts.append(roast)
-	
+
 	try:
 		with open(_get_asset_path(constants.ROASTS_NAME), 'w') as f:
 			f.write('\n'.join(roasts))
-		
+
 		return constants.SUCCESSFUL
 	except Exception as e:
 		print('Exception in `add_roast`: ', e)

@@ -1,119 +1,18 @@
-import do_not_push
-import constants
-import re
 import asyncio
-from typing import Optional, Union, Callable
-import discord
 import os
-from sqlitedict import SqliteDict
-from cmds import *
+import re
 import sys
 from datetime import datetime, timedelta, timezone
-import subprocess
+import discord
+from sqlitedict import SqliteDict
+import constants
+import do_not_push
+from cmds import *  # noqa: F403
 from DatabaseManager import DatabaseManager
+from CommandHandler import CommandHandler
 from Message import Message
 
 sys.path.append(os.path.basename(__file__))
-
-def is_admin(user_id:int):
-	return user_id in do_not_push.ADMINS
-
-class CommandHandler:
-	def __init__(self, db_manager: DatabaseManager, get_bot: Callable):
-		self.db = db_manager
-
-		self.commands = {
-			'help': lambda message: help.help(message.args),
-			
-			# Copypasta
-			'add': lambda message: add.add(message, self.db, overwrite=False),
-			'add_o': lambda message: add.add(message, self.db, overwrite=True),
-			'saved': self._handle_saved,
-			'delete': lambda message: delete.delete(message, self.db),
-			'delete_me': lambda message: delete_me.delete_me(self.db, message.author.id),
-			'rename': lambda message: rename_key.handle_rename(message, self.db, overwrite=False),
-			'rename_o': lambda message: rename_key.handle_rename(message, self.db, overwrite=True),
-			'steal': lambda message: steal.handle_steal(self.db, message.author, message.args),
-			'random': lambda message: random_key.handle_random(message.author, message.args),
-			'search': lambda message: search.handle_search(self.db, message.author, message.args),
-			
-			# Text transform
-			'clap': lambda message: text_transform.handle_text_transform('clap', message),
-			'zalgo': lambda message: text_transform.handle_text_transform('zalgo', message),
-			'forbesify': lambda message: text_transform.handle_text_transform('forbesify', message),
-			'copypasta': lambda message: text_transform.handle_text_transform('copypasta', message),
-			'owo': lambda message: text_transform.handle_text_transform('owo', message),
-			'uwu': lambda message: text_transform.handle_text_transform('owo', message), # Alias
-			'stretch': lambda message: text_transform.handle_text_transform('stretch', message),
-			
-			# Fun
-			'mock': mock.handle_mock,
-			'roast': lambda message: roast.roast(message.message_obj, self.get_bot()),
-			'roast_add': lambda message: roast.add_roast(message),
-
-			# TODO
-			'deepfry': lambda message: deepfry.handle_deepfry_command(message.reference),
-			# 'dream': lambda message: self._handle_dream(message.author, message.args, message.reference),
-			'dream': lambda message: dream.handle_dream_command(message.reference),
-
-			# Admin
-			'blacklist': lambda message: blacklist.handle_blacklist(message.author.id, message.args),
-		}
-		self.get_bot = get_bot
-
-	def _handle_saved(self, message: 'Message') -> str:
-		args = message.args
-		if len(args) == 2 and args[1].startswith('<@') and args[1].endswith('>'):
-			if not is_admin(message.author.id):
-				return "You don't have permission to view another user's keys."
-			find_keys_for = args[1][2:-1]
-			# keys = sorted(self.db.get_user_keys(mentioned_user_id))
-			# return f"Keys for <@{mentioned_user_id}>:\n- " + '\n- '.join(keys) if keys else constants.EMPTY_LIST
-		else:
-			find_keys_for = message.author.id
-
-		keys = sorted(self.db.get_user_keys(find_keys_for))
-		if len(keys) == 0:
-			return constants.EMPTY_LIST
-		
-		return_text = f'{constants.SAVED_MSGS} <@{str(find_keys_for)}>\n' +\
-							'- ' + '\n- '.join(keys) if keys else constants.EMPTY_LIST
-
-		message_obj = message.message_obj
-		if isinstance(message_obj.channel, discord.TextChannel) or isinstance(message_obj.channel, discord.VoiceChannel):
-			if message_obj.channel.permissions_for(message_obj.channel.guild.me).add_reactions and \
-						message_obj.channel.permissions_for(message_obj.channel.guild.me).manage_messages:
-				return_text = f'{constants.SAVED_MSGS} <@{str(find_keys_for)}>\n1/{str(len(keys)//10 + 1)}\n' +\
-								'- ' + '\n- '.join(keys[:10]) if keys else constants.EMPTY_LIST
-
-		return return_text
-
-	# async def _handle_deepfry(self, user: discord.User, args: list, reply) -> Union[str, discord.File]:
-	# 	if reply is None:
-	# 		return "You need to reply to a message with an image to use this command."
-	# 	return await deepfry.handle_deepfry_command(reply)
-
-	# async def _handle_dream(self, user: discord.User, args: list, reply) -> Union[str, discord.File, None]:
-	# 	return await dream.handle_dream_command(user, args, message=reply)
-
-	async def handle_command(self, message: Message) -> Optional[Union[str, discord.File]]:
-		args = message.args
-		if not args:
-			return None
-
-		command = args[0]
-		if command in self.commands:
-			if command in constants.ADMIN_COMMANDS:
-				if not is_admin(message.author.id):
-					return constants.ADMIN_ONLY
-				return self.commands[command](message)
-
-			if command in ['dream', 'deepfry']:
-				return await self.commands[command](message)
-			else:
-				return self.commands[command](message)
-		return None
-
 
 class DiscordBot:
 	def __init__(self, token: str):
@@ -128,10 +27,26 @@ class DiscordBot:
 	def _get_user(self):
 		return self.client.user
 
+	async def update_status(self):
+		while True:
+			try:
+				total_users = sum(guild.member_count for guild in self.client.guilds)
+				total_servers = len(self.client.guilds)
+				status = f'Serving {total_users}+ users in {total_servers} servers'
+				await self.client.change_presence(activity=discord.Activity(
+					type=discord.ActivityType.custom,
+					name=status,
+					state=status
+				))
+			except Exception as e:
+				print(f"Error updating status: {e}", file=sys.stderr)
+			await asyncio.sleep(86400)
+
 	def setup_events(self):
 		@self.client.event
 		async def on_ready():
 			print(f'Logged in as {self.client.user}')
+			asyncio.create_task(self.update_status())
 
 		@self.client.event
 		async def on_message(message: discord.Message):
@@ -140,10 +55,10 @@ class DiscordBot:
 
 			if not blacklist.is_blacklisted(message.author.id):
 				return constants.BLACKLISTED
-			
+
 			mess = Message(message)
 			await self.process_message(mess)
-		
+
 		@self.client.event
 		async def on_reaction_add(reaction, user:discord.User):
 			if user == self.client.user:
@@ -239,21 +154,18 @@ class DiscordBot:
 				await reaction.remove(user)
 			except discord.HTTPException:
 				print('Error removing reactions', file=sys.stderr)
-			except discord.Forbidden:
-				print('This shouldn\'t happen :)', file=sys.stderr)
 			except Exception as e:
 				print(e, file=sys.stderr)
 
 
-
-	async def process_message(self, message: 'Message'):
+	async def process_message(self, message: Message):
 		content = message.content
 		if re.search(constants.REPLACE, content):
 			await self.handle_replacement(message)
 		elif re.match(constants.COMMAND, content):
 			await self.handle_bot_command(message)
 
-	async def handle_replacement(self, message: 'Message'):
+	async def handle_replacement(self, message: Message):
 		def get_text(match:re.Match)->str:
 			key = match.string[match.start()+2:match.end()-2]
 			replacement = self.db_manager.retrieve_text(message.author.id, key)
@@ -268,13 +180,13 @@ class DiscordBot:
 			target = message.reference.resolved if message.reference else message.message_obj
 			await target.reply(replaced_text)
 
-	async def handle_bot_command(self, message: 'Message'):
+	async def handle_bot_command(self, message: Message):
 		response = await self.command_handler.handle_command(message)
 
 		if response:
 			await self.send_response(message, response)
 
-	async def send_response(self, message: 'Message', response):
+	async def send_response(self, message: Message, response):
 		message_obj = message.message_obj
 		cmd = message_obj.content.strip()[2:]
 		reply_to = message.reference.resolved if message.reference and cmd.split()[0] in {
