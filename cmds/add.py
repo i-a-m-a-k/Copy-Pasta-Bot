@@ -1,6 +1,6 @@
-import constants
-from DatabaseManager import DatabaseManager
-from Message import Message
+import utils.Constants as constants
+from utils.DatabaseManager import DatabaseManager
+from utils.Message import Message
 
 
 def add(message: Message, db: DatabaseManager, overwrite: bool = False) -> str:

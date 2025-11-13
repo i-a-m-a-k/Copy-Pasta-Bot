@@ -1,8 +1,9 @@
 import os
 import random
 import discord
-import constants
-from Message import Message
+
+import utils.Constants as constants
+from utils.Message import Message
 
 def _get_asset_path(filename: str) -> str:
 	root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -27,7 +28,7 @@ def _get_random_roast(num=1) -> str:
 	roasts = _load_roasts()
 	return random.sample(roasts, num)
 
-def roast(message: discord.Message, bot_user: discord.ClientUser) -> str:
+def roast(message: Message, bot_user: discord.ClientUser) -> str:
 	"""Handle the ;;roast command and return the response message"""
 	no_mentions = False
 	bot_mention = False

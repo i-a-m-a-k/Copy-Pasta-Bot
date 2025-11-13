@@ -3,14 +3,16 @@ import os
 import re
 import sys
 from datetime import datetime, timedelta, timezone
+
 import discord
 from sqlitedict import SqliteDict
-import constants
+
 import do_not_push
+import utils.Constants as constants
 from cmds import *  # noqa: F403
-from DatabaseManager import DatabaseManager
-from CommandHandler import CommandHandler
-from Message import Message
+from utils.CommandHandler import CommandHandler
+from utils.DatabaseManager import DatabaseManager
+from utils.Message import Message
 
 sys.path.append(os.path.basename(__file__))
 

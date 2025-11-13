@@ -1,8 +1,9 @@
 import random
 import re
 import nltk
-import constants
-from Message import Message
+
+import utils.Constants as constants
+from utils.Message import Message
 
 nltk.download('punkt')
 nltk.download('averaged_perceptron_tagger_eng')

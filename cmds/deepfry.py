@@ -7,7 +7,8 @@ import numpy as np
 import deeppyer
 import os
 from typing import Optional, Union
-import constants
+
+import utils.Constants as constants
 
 # Get the absolute path to the cascade files
 CASCADE_PATH = os.path.dirname(cv2.__file__) + "/data/haarcascade_frontalface_default.xml"

@@ -1,6 +1,7 @@
 import discord
-import constants
-from DatabaseManager import DatabaseManager
+
+import utils.Constants as constants
+from utils.DatabaseManager import DatabaseManager
 
 def _steal(db:DatabaseManager, user:str, key:str, steal_from:str, new_key=None) -> str:
 	# steal_from_db = db.get(steal_from, None)

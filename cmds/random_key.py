@@ -1,8 +1,8 @@
 import random
 from typing import Optional
 import discord
-import constants
-from DatabaseManager import DatabaseManager
+import utils.Constants as constants
+from utils.DatabaseManager import DatabaseManager
 
 def _random_key(db: DatabaseManager, user: str, search_term:Optional[str]=None) -> str:
 	# user_db = db.get(user, None)

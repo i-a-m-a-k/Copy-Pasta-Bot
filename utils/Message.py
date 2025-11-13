@@ -1,5 +1,5 @@
 import discord
-import constants
+import utils.Constants as constants
 import re
 import shlex
 
@@ -15,6 +15,8 @@ class Message:
 		self.images = set(self.get_attachments(message_obj, attachment_type='image', check_reference=True))
 		self.videos = set(self.get_attachments(message_obj, attachment_type='video', check_reference=True))
 		self.audios = set(self.get_attachments(message_obj, attachment_type='audio', check_reference=True))
+
+		self.mentions = getattr(message_obj, 'mentions', None)
 
 		# Incase image is the only embed, content should be considered empty
 		if len(self.images) == 1 and list(self.images)[0] == self.content:

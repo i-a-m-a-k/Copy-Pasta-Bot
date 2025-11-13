@@ -1,4 +1,4 @@
-import constants
+import utils.Constants as constants
 
 def help(args:list) -> str:
 	if len(args) != 2:

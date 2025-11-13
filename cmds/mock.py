@@ -4,15 +4,15 @@ import re
 import discord
 from PIL import Image, ImageDraw, ImageFont
 
-import constants
-from Message import Message
+import utils.Constants as constants
+from utils.Message import Message
 
 
 def _get_asset_path(filename: str) -> str:
 	root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 	return os.path.join(root_dir, 'assets', filename)
 
-def _process_text(message: discord.Message, content: str) -> list:
+def _process_text(message: Message, content: str) -> list:
 
 	# Create a mapping of user IDs to display names
 	user_mentions = {
@@ -131,7 +131,7 @@ def handle_mock(message: Message) -> discord.File:
 	if message.reference is None:
 		return constants.REPLY_TO_MESSAGE
 
-	reply = Message(message.reply.reference)
+	reply = Message(message.reference)
 
 	# segments = process_text(reply.resolved, reply.resolved.content)
 	segments = _process_text(reply.message_obj, reply.content)

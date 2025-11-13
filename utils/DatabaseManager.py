@@ -1,6 +1,6 @@
 from typing import Optional
 from sqlitedict import SqliteDict
-import constants
+import utils.Constants as constants
 import traceback
 
 class DatabaseManager:

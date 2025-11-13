@@ -1,6 +1,6 @@
-import constants
-from DatabaseManager import DatabaseManager
-from Message import Message
+import utils.Constants as constants
+from utils.DatabaseManager import DatabaseManager
+from utils.Message import Message
 
 def delete(message: Message, db:DatabaseManager) -> str:
 	if len(message.args) != 2:

@@ -1,8 +1,9 @@
 import discord
-import constants
+
 import do_not_push
-from DatabaseManager import DatabaseManager
-from Message import Message
+import utils.Constants as constants
+from utils.DatabaseManager import DatabaseManager
+from utils.Message import Message
 
 def is_admin(user_id: int):
     return user_id in do_not_push.ADMINS
