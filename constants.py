@@ -13,6 +13,10 @@ WRONG_USER_ID       = 'The user you tagged is either in the wrong position or wr
 EMPTY_LIST          = 'You have not saved any text yet.'
 EMPTY_LIST_STEAL    = 'The user has not saved any text yet.'
 EMPTY_MESSAGE       = 'The message you replied to seems to be empty.'
+REGEX_USAGE         = 'Usage: `;;s <pattern> <replacement> [flags g, i, count]`'
+REGEX_NO_REPLY      = 'Please reply to a message to use this command.\n' + REGEX_USAGE
+REGEX_EMPTY_MSG     = 'Cannot regex an empty message or a message with only attachments.\n' + REGEX_USAGE
+REGEX_NOT_FOUND     = 'No matching pattern found.'
 HELP_TEXT           = '''
 **Basic Usage**:
 `;;cmd` - to interact with the bot (modify keys, meme commands)
@@ -45,11 +49,13 @@ HELP_TEXT_MEMES    = '''
 - **deepfry** : Deep fry an image
 - **owo** : OwOify text
 - **copypasta** : Generate copypasta text from a message
-- **forbesify** : Convert text to...
 - **stretch** : Streeeeech aaaaa teeeext
+- **vaporwave** : Ｃｏｎｖｅｒｔ　ｔｅｘｔ　ｔｏ　ｆｕｌｌｗｉｄｔｈ
+- **emojify** : Convert text to 🇪 🇲 🇴 🇯 🇮 🇸
 - **roast <@user>** : Roast a user (No need to reply to message)
 - **flirt <@user>** : Flirt with a user (No need to reply to message)
-- **dream <prompt>** :  Generate an image from Luma AI. (No need to reply to message). _The prompt and the generated image might be logged by Luma AI. The prompt and the generated image with user id are definitely logged by the bot for moderation purposes_
+- **s <pattern> <replacement> [flags g, i, count]**: Vim-like regex, replaces `pattern` in replied message with `replacement` (text only)
+- **dream** : Create an image or a video from a text prompt or an image. (No need to reply to message)
 '''
 
 SAVED_MSGS = 'Saved messages for:'

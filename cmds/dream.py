@@ -6,7 +6,6 @@ import do_not_push
 import time
 import argparse
 import shlex
-from io import BytesIO
 import math
 import os
 import csv
@@ -85,6 +84,11 @@ async def handle_dream_command(user, args, message=None):
 		parser = argparse.ArgumentParser(add_help=False)
 		parser.add_argument('-v', '--video', action='store_true', help='Generate a video instead of an image')
 		parser.add_argument('-i2v', '--image-to-video', action='store_true', help='Transform an image into a video')
+		parser.add_argument('-iref', '--image-ref', action='store_true', help='Use replied image as an image reference')
+		parser.add_argument('-sref', '--style-ref', action='store_true', help='Use replied image as a style reference')
+		parser.add_argument('-cref', '--character-ref', action='store_true', help='Use replied image as a character reference')
+		parser.add_argument('-modify', '--modify-image', action='store_true', help='Modify the replied image')
+		parser.add_argument('-w', '--weight', type=float, default=None, help='Weight of the image reference (0.0 to 1.0)')
 		parser.add_argument('prompt', nargs='*', help='The prompt for generation')
 		
 		# Convert args to a string and use shlex to handle quoting
@@ -93,32 +97,56 @@ async def handle_dream_command(user, args, message=None):
 			parsed_args = parser.parse_args(shlex.split(args_string))
 			is_video = parsed_args.video
 			is_image_to_video = parsed_args.image_to_video
+			has_iref = parsed_args.image_ref
+			has_sref = parsed_args.style_ref
+			has_cref = parsed_args.character_ref
+			has_modify = parsed_args.modify_image
+			weight_val = parsed_args.weight
 			prompt = " ".join(parsed_args.prompt)
 		except Exception:
 			# Fallback for simpler parsing if argparse fails
 			is_video = "-v" in args_string or "--video" in args_string
 			is_image_to_video = "-i2v" in args_string or "--image-to-video" in args_string
+			has_iref = "-iref" in args_string or "--image-ref" in args_string
+			has_sref = "-sref" in args_string or "--style-ref" in args_string
+			has_cref = "-cref" in args_string or "--character-ref" in args_string
+			has_modify = "-modify" in args_string or "--modify-image" in args_string
+			
+			# Fallback parsing for weight
+			weight_val = None
+			if "-w" in args_string or "--weight" in args_string:
+				parts = args_string.split()
+				for i, p in enumerate(parts):
+					if p in ["-w", "--weight"] and i + 1 < len(parts):
+						try:
+							weight_val = float(parts[i+1])
+						except ValueError:
+							pass
+						break
 			
 			# Remove the flags from the prompt
 			prompt = args_string
-			if is_video:
-				prompt = prompt.replace("-v", "").replace("--video", "")
-			if is_image_to_video:
-				prompt = prompt.replace("-i2v", "").replace("--image-to-video", "")
+			for flag in ["-v", "--video", "-i2v", "--image-to-video", "-iref", "--image-ref", "-sref", "--style-ref", "-cref", "--character-ref", "-modify", "--modify-image"]:
+				prompt = prompt.replace(flag, "")
+			if weight_val is not None:
+				weight_str = f"-w {weight_val}" if f"-w {weight_val}" in prompt else (f"--weight {weight_val}" if f"--weight {weight_val}" in prompt else "")
+				if weight_str:
+					prompt = prompt.replace(weight_str, "")
+
+				prompt = prompt.replace("-w", "").replace("--weight", "")
+
 			prompt = prompt.strip()
 		
 		user_id = user.id
 		is_admin = user_id in do_not_push.LUMA_USERS
 		
-		if not is_admin and (is_video or is_image_to_video):
-			return "Sorry, video and image-to-video generation are admin-only features."
 		
 		# Determine current generation type - combine video and image-to-video into "video"
 		current_generation_type = "video" if (is_video or is_image_to_video) else "image"
 		current_time = time.time()
 
 		if not is_admin:
-			cooldown_period = 300
+			cooldown_period = 60
 			
 			if user_id in user_cooldowns and current_generation_type in user_cooldowns[user_id]:
 				last_used = user_cooldowns[user_id][current_generation_type]
@@ -126,36 +154,20 @@ async def handle_dream_command(user, args, message=None):
 				time_remaining = cooldown_period - time_elapsed
 				
 				if time_remaining > 0:
-					minutes_remaining = math.ceil(time_remaining / 60)
-					return f"You're on cooldown for image generation for {minutes_remaining} more minute{'s' if minutes_remaining > 1 else ''}. Please try again later."
-			
-			# If we reach here, update the cooldown for the specific type they're using
-			if user_id not in user_cooldowns:
-				user_cooldowns[user_id] = {}
-			
-			user_cooldowns[user_id][current_generation_type] = current_time
+					minutes = int(time_remaining // 60)
+					seconds = int(time_remaining % 60)
+					if minutes > 0:
+						time_str = f"{minutes} minute{'s' if minutes > 1 else ''} and {seconds} second{'s' if seconds != 1 else ''}"
+					else:
+						time_str = f"{seconds} second{'s' if seconds != 1 else ''}"
+					return f"You're on cooldown for {current_generation_type} generation for {time_str}. Please try again later."
 		
-		def upload_image_to_0x0(image_bytes):
-			try:
-				temp_file = BytesIO(image_bytes)
-				files = {'file': ('image.jpg', temp_file, 'application/octet-stream')}
-				
-				headers = {
-					'User-Agent': 'DiscordBotforLuma/1.0 (Discord Image Service)'
-				}
-				
-				response = requests.post("https://0x0.st", files=files, headers=headers)
-				
-				if response.status_code == 200:
-					return response.text.strip()
-				return None
-			except Exception as e:
-				return None
+		requires_replied_image = is_image_to_video or has_iref or has_sref or has_cref or has_modify
 		
-		# Image to video requires a reply to a message with an image
-		if is_image_to_video:
+		image_url = None
+		if requires_replied_image:
 			if not message:
-				return "For image-to-video generation, you must reply to a message containing an image."
+				return "This generation type requires you to reply to a message containing an image."
 				
 			# In your implementation, 'message' is already the MessageReference object
 			# Get the resolved message directly
@@ -184,18 +196,41 @@ async def handle_dream_command(user, args, message=None):
 			image_response = requests.get(image_url)
 			if image_response.status_code != 200:
 				return f"Failed to download the image from Discord CDN: HTTP {image_response.status_code}"
-			
-			# Upload the image to 0x0.st
-			uploaded_image_url = upload_image_to_0x0(image_response.content)
-			if not uploaded_image_url:
-				return "Failed to upload image to 0x0.st. Please try again later."
 		
-		if not prompt and not is_image_to_video:
+		num_advanced_flags = sum([has_iref, has_sref, has_cref, has_modify])
+		if num_advanced_flags > 1:
+			return "Please use only one advanced image reference flag at a time (-iref, -sref, -cref, or -modify)."
+		
+		# Allow prompt to be empty ONLY if we are doing modify or image_to_video
+		if not prompt and not is_image_to_video and not has_modify:
 			usage_msg = "Please provide a prompt for generation. Usage: ;;dream <prompt>"
 			if is_admin:
-				usage_msg += ", ;;dream -v <prompt> for video, or ;;dream -i2v <prompt> to transform an image to video (must reply to a message with an image)"
+				usage_msg += "\nAdvanced: `-v` (video), `-i2v` (image to video), `-iref`, `-sref`, `-cref`, `-modify`"
 			return usage_msg
 		
+		# Check content moderation
+		if prompt:
+			openai_key = getattr(do_not_push, "OPENAI_API_KEY", "")
+			if openai_key:
+				try:
+					mod_response = requests.post(
+						"https://api.openai.com/v1/moderations",
+						headers={"Authorization": f"Bearer {openai_key}", "Content-Type": "application/json"},
+						json={"input": prompt},
+						timeout=5
+					)
+					if mod_response.status_code == 200:
+						mod_data = mod_response.json()
+						if mod_data["results"][0]["flagged"]:
+							add_banned_user(
+								user_id=user.id,
+								username=user.name if hasattr(user, 'name') else str(user),
+								prompt=prompt
+							)
+							return "Your prompt was flagged by our safety system for inappropriate content. You have been banned from using the dream command."
+				except Exception as e:
+					print(f"Moderation API error: {e}")
+
 		# Initialize Luma AI client with auth_token
 		client = LumaAI(auth_token=do_not_push.LUMA_API_KEY)
 		
@@ -221,7 +256,7 @@ async def handle_dream_command(user, args, message=None):
 				keyframes={
 					"frame0": {
 						"type": "image",
-						"url": uploaded_image_url
+						"url": image_url
 					}
 				},
 				resolution="540p",
@@ -237,7 +272,32 @@ async def handle_dream_command(user, args, message=None):
 				duration="5s"
 			)
 		else:
-			generation = client.generations.image.create(prompt=prompt, model='photon-1')
+			# Base image generation parameters
+			kwargs = {
+				"prompt": prompt,
+				"model": "photon-1"
+			}
+			
+			if image_url:
+				# Clamp weight parameter naturally
+				safe_weight = None
+				if weight_val is not None:
+					safe_weight = max(0.0, min(1.0, weight_val))
+					
+				ref_dict = {"url": image_url}
+				if safe_weight is not None:
+					ref_dict["weight"] = safe_weight
+					
+				if has_iref:
+					kwargs["image_ref"] = [ref_dict]
+				elif has_sref:
+					kwargs["style_ref"] = [ref_dict]
+				elif has_cref:
+					kwargs["character_ref"] = {"identity0": {"images": [image_url]}} # Character ref does not accept weight
+				elif has_modify:
+					kwargs["modify_image_ref"] = ref_dict
+			
+			generation = client.generations.image.create(**kwargs)
 		
 		# Poll until completion
 		completed = False
@@ -250,7 +310,7 @@ async def handle_dream_command(user, args, message=None):
 			if generation.state == "completed":
 				completed = True
 			elif generation.state == "failed":
-				failure_reason = getattr(generation, 'failure_reason', '')
+				failure_reason = getattr(generation, 'failure_reason', 'Unknown reason')
 				if "moderation" in failure_reason.lower() or "400" in failure_reason:
 					add_banned_user(
 						user_id=user.id,
@@ -318,6 +378,12 @@ async def handle_dream_command(user, args, message=None):
 			description=f"Dream {display_generation_type} completed for '{prompt}'"
 		)
 		
+		# Record the successful generation for cooldown
+		if not is_admin:
+			if user_id not in user_cooldowns:
+				user_cooldowns[user_id] = {}
+			user_cooldowns[user_id][current_generation_type] = time.time()
+			
 		return discord_file
 		
 	except Exception as e:
