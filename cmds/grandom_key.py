@@ -6,7 +6,7 @@ def grandom_key(db: SqliteDict, search_term: str=None) -> str:
 	if search_term is None:
 		users_with_keys = [user for user in db.keys() if db.get(user, {})]
 		if not users_with_keys:
-			return constants.EMPTY_LIST
+			return "No saved text found across any users."
 			
 		random_user = random.choice(users_with_keys)
 		user_db = db.get(random_user, {})
@@ -20,6 +20,6 @@ def grandom_key(db: SqliteDict, search_term: str=None) -> str:
 				all_values.append(value)
 				
 	if not all_values:
-		return constants.EMPTY_LIST
+		return f"No keys found matching `{search_term}` across any users."
 		
 	return random.choice(all_values)

@@ -12,8 +12,7 @@ def steal(db:SqliteDict, user:str, key:str, steal_from:str, new_key:str=None) ->
 	
 	user_db = db.get(user, None)
 	if user_db is None:
-		return constants.EMPTY_LIST
-	
+		user_db = {}
 	if new_key is None:
 		if user_db.get(key, None) is not None:
 			return constants.KEY_EXISTS_STEAL

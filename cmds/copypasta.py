@@ -14,6 +14,8 @@ def handle_copypasta_command(reference):
     tag_positions = [(m.start(), m.end(), m.group()) for m in user_tags]
     
     working_text = re.sub(r'<@!?\d+>', '', text)
+    if not working_text.strip():
+        return "Not enough text to copypasta (message is only mentions)."
     b_char = random.choice(working_text.lower())
     
     result = []
