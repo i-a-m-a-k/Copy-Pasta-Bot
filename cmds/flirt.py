@@ -6,13 +6,19 @@ def get_asset_path(filename: str) -> str:
     root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     return os.path.join(root_dir, 'assets', filename)
 
+# Module-level cache — loaded once on first use
+_FLIRTS_CACHE = None
+
 def load_flirts() -> list:
-    """Load flirts from the flirts.txt file"""
+    """Load flirts from the flirts.txt file (cached after first call)."""
+    global _FLIRTS_CACHE
+    if _FLIRTS_CACHE is not None:
+        return _FLIRTS_CACHE
     try:
         with open(get_asset_path('flirts.txt'), 'r', encoding='utf-8') as file:
             # Filter out empty lines
-            flirts = [line.strip() for line in file if line.strip()]
-        return flirts
+            _FLIRTS_CACHE = [line.strip() for line in file if line.strip()]
+        return _FLIRTS_CACHE
     except FileNotFoundError:
         print("Error: flirts.txt file not found in assets directory")
         return ["Error: Couldn't find flirts file. Contact the bot owner."]

@@ -6,13 +6,19 @@ def get_asset_path(filename: str) -> str:
 	root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 	return os.path.join(root_dir, 'assets', filename)
 
+# Module-level cache — loaded once on first use
+_ROASTS_CACHE = None
+
 def load_roasts() -> list:
-	"""Load roasts from the roasts.txt file"""
+	"""Load roasts from the roasts.txt file (cached after first call)."""
+	global _ROASTS_CACHE
+	if _ROASTS_CACHE is not None:
+		return _ROASTS_CACHE
 	try:
 		with open(get_asset_path('roasts.txt'), 'r', encoding='utf-8') as file:
 			# Filter out empty lines
-			roasts = [line.strip() for line in file if line.strip()]
-		return roasts
+			_ROASTS_CACHE = [line.strip() for line in file if line.strip()]
+		return _ROASTS_CACHE
 	except FileNotFoundError:
 		print("Error: roasts.txt file not found in assets directory")
 		return ["Error: Couldn't find roasts file. Contact the bot owner."]
