@@ -98,6 +98,17 @@ class DatabaseManager:
 			return True
 		return False
 
+	def find_all_keys_by_value(self, value: str) -> list:
+		"""Reverse-lookup: find all (user_id, key) pairs that store this value.
+		Returns a list of all matches found."""
+		results = []
+		for user_id in self.db.keys():
+			user_db = self.db.get(user_id, {})
+			for key, stored_value in user_db.items():
+				if stored_value == value:
+					results.append((user_id, key))
+		return results
+
 	def copy_database(self, new_db:SqliteDict):
 		for key in self.db.keys():
 			new_db[key] = self.db[key]
@@ -136,7 +147,9 @@ class CommandHandler:
 			'deepfry': lambda u, a, r, m: self._handle_deepfry(u, a, r, m),
 			'dream': lambda u, a, r, m: self._handle_dream(u, a, r),
 			'disable': lambda u, a, r, m: self._handle_disable(u, a, m),
-			'enable': lambda u, a, r, m: self._handle_enable(u, a, m)
+			'enable': lambda u, a, r, m: self._handle_enable(u, a, m),
+			'delkey': lambda u, a, r, m: self._handle_delkey(u, a, r, m),
+			'gsearch': lambda u, a, r, m: self._handle_gsearch(u, a)
 		}
 		self.get_bot = get_bot
 
@@ -304,6 +317,64 @@ class CommandHandler:
 		_save_disabled_commands()
 		return f"`{cmd_to_enable}` has been re-enabled in this server."
 
+	def _handle_delkey(self, user: discord.User, args: list, reply, message) -> Union[str, discord.Embed]:
+		"""Admin-only command to delete a key from a user's database.
+		Usage 1 (reply): Reply to a bot message with ;;delkey
+		Usage 2 (standalone): ;;delkey @user keyname"""
+		if not is_admin(user.id):
+			return "You don't have permission to use this command."
+
+		# Mode 1: Reply to a bot message with ;;delkey
+		if reply is not None and len(args) == 1:
+			replied_message = reply.resolved
+			if replied_message is None:
+				return "Could not fetch the replied message."
+
+			# The replied message must be from the bot itself
+			bot_user = self.get_bot()
+			if replied_message.author != bot_user:
+				return "You can only use reply mode on messages sent by the bot."
+
+			value_to_find = replied_message.content.strip()
+			if not value_to_find:
+				return "The replied message has no text content to match."
+
+			results = self.db.find_all_keys_by_value(value_to_find)
+			if not results:
+				return "Could not find a key matching that message content."
+
+			deleted_entries = []
+			for owner_id, key_name in results:
+				self.db.delete_key(owner_id, key_name)
+				deleted_entries.append(f"`{key_name}` from <@{owner_id}>")
+
+			embed = discord.Embed(color=discord.Color.red())
+			if len(deleted_entries) == 1:
+				embed.description = f"Deleted {deleted_entries[0]}"
+			else:
+				embed.description = "Deleted the following keys:\n" + "\n".join([f"- {e}" for e in deleted_entries])
+			return embed
+
+		# Mode 2: ;;delkey @user keyname
+		if len(args) == 3:
+			target_mention = args[1]
+			key_name = args[2]
+
+			if not target_mention.startswith('<@') or not target_mention.endswith('>'):
+				return "Usage: `;;delkey <@user> <keyname>` or reply to a bot message with `;;delkey`"
+
+			target_user_id = target_mention[2:-1]
+			if self.db.delete_key(target_user_id, key_name):
+				embed = discord.Embed(
+					description=f"Deleted key `{key_name}` from <@{target_user_id}>'s database.",
+					color=discord.Color.red()
+				)
+				return embed
+			else:
+				return f"Key `{key_name}` not found for that user."
+
+		return "Usage: `;;delkey <@user> <keyname>` or reply to a bot message with `;;delkey`"
+
 	def _handle_steal(self, user: discord.User, args: list, reply) -> str:
 		if len(args) == 2 and '<@' in args[1]:
 			return constants.WRONG_ARGS_STEAL
@@ -363,6 +434,14 @@ class CommandHandler:
 		if len(args) != 2:
 			return constants.WRONG_ARGS
 		return search.search(self.db.db, user.id, args[1])
+
+	def _handle_gsearch(self, user: discord.User, args: list) -> str:
+		"""Admin-only global search across all users' keys."""
+		if not is_admin(user.id):
+			return "You don't have permission to use this command."
+		if len(args) != 2:
+			return "Usage: `;;gsearch <term>`"
+		return gsearch.gsearch(self.db.db, args[1])
 
 	async def handle_command(self, user: discord.User, cmd: str, reply=None, message=None) -> Optional[Union[str, discord.File]]:
 		if cmd.startswith(';;'):
@@ -583,10 +662,67 @@ class DiscordBot:
 
 	async def process_message(self, message: discord.Message):
 		content = message.content.strip()
-		if re.search(constants.REPLACE, content):
+		if content == ';;delmsg':
+			await self.handle_delmsg(message)
+		elif re.search(constants.REPLACE, content):
 			await self.handle_replacement(message)
 		elif re.match(constants.COMMAND, content):
 			await self.handle_bot_command(message)
+
+	async def handle_delmsg(self, message: discord.Message):
+		"""Delete a bot message. Users can delete bot replies to their own messages.
+		Bot admins can delete any bot message."""
+		if message.reference is None:
+			await message.reply("You need to reply to a bot message to use this command.")
+			return
+
+		replied_message = message.reference.resolved
+		if replied_message is None:
+			await message.reply("Could not fetch the replied message.")
+			return
+
+		# The replied message must be from the bot
+		if replied_message.author != self.client.user:
+			await message.reply("That message was not sent by me.")
+			return
+
+		# Check permissions:
+		# - Bot admins can delete any bot message
+		# - Regular users can only delete bot messages that are replies to their own messages
+		user_is_admin = is_admin(message.author.id)
+
+		if not user_is_admin:
+			# Check if the bot message is a reply to the user's message
+			if replied_message.reference is None:
+				await message.reply("You can only delete bot messages that are replies to your own messages.")
+				return
+			# resolved may be None since Discord doesn't recursively resolve references,
+			# so fetch the original message via the API if needed
+			original_message = replied_message.reference.resolved
+			if original_message is None:
+				try:
+					original_message = await message.channel.fetch_message(replied_message.reference.message_id)
+				except (discord.NotFound, discord.HTTPException):
+					await message.reply("Could not verify the original message author.")
+					return
+			if original_message.author.id != message.author.id:
+				await message.reply("You can only delete bot messages that are replies to your own messages.")
+				return
+
+		try:
+			await replied_message.delete()
+		except discord.Forbidden:
+			await message.reply("I don't have permission to delete that message.")
+			return
+		except discord.HTTPException as e:
+			await message.reply(f"Failed to delete: {e}")
+			return
+
+		# Try to also delete the ;;delmsg command message
+		try:
+			await message.delete()
+		except (discord.Forbidden, discord.HTTPException):
+			pass
 
 	async def handle_replacement(self, message: discord.Message):
 		def get_text(match:re.Match)->str:
@@ -697,6 +833,8 @@ class DiscordBot:
 			await reply_to.reply(file=response)
 			if hasattr(response.fp, 'name'):
 				os.remove(response.fp.name)
+		elif isinstance(response, discord.Embed):
+			await reply_to.reply(embed=response)
 		elif isinstance(response, str):
 			if len(response) > 2000:
 				# Always reply to the command message for error responses
