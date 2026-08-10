@@ -831,8 +831,11 @@ class DiscordBot:
 
 		if isinstance(response, discord.File):
 			await reply_to.reply(file=response)
-			if hasattr(response.fp, 'name'):
-				os.remove(response.fp.name)
+			if hasattr(response.fp, 'name') and isinstance(response.fp.name, str) and os.path.exists(response.fp.name):
+				try:
+					os.remove(response.fp.name)
+				except OSError:
+					pass
 		elif isinstance(response, discord.Embed):
 			await reply_to.reply(embed=response)
 		elif isinstance(response, str):

@@ -1,3 +1,4 @@
+import io
 from lumaai import LumaAI
 import requests
 import asyncio
@@ -364,16 +365,14 @@ async def handle_dream_command(user, args, message=None):
 			status="success"
 		)
 		
-		# Download the generated content
-		response = requests.get(media_url, stream=True)
-		file_path = f'{generation.id}.{file_extension}'
-		
-		with open(file_path, 'wb') as file:
-			file.write(response.content)
+		# Download the generated content directly into memory
+		response = requests.get(media_url)
+		buffer = io.BytesIO(response.content)
+		buffer.seek(0)
 		
 		# Create a Discord file object
 		discord_file = discord.File(
-			file_path,
+			fp=buffer,
 			filename=discord_filename,
 			description=f"Dream {display_generation_type} completed for '{prompt}'"
 		)

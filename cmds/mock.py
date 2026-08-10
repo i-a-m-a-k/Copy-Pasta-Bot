@@ -1,7 +1,9 @@
+import io
 import os
 import re
 from PIL import Image, ImageDraw, ImageFont
 import discord
+from typing import Optional
 
 def get_asset_path(filename: str) -> str:
     root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -75,7 +77,7 @@ def fit_text_to_width(draw, text: str, font: ImageFont.FreeTypeFont, max_width: 
     
     return text[:left] + "..."
 
-def create_mock_image(segments: list) -> str:
+def create_mock_image(segments: list) -> io.BytesIO:
     
     # Process each segment according to whether it should be mocked
     processed_text = ''
@@ -115,12 +117,13 @@ def create_mock_image(segments: list) -> str:
     # Add text to image
     draw.text((x, y), fitted_text, font=font, fill='white')
     
-    # Save the image
-    output_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'temp_mock.jpg')
-    base_image.save(output_path)
-    return output_path
+    # Save the image to an in-memory buffer
+    buffer = io.BytesIO()
+    base_image.save(buffer, format='JPEG')
+    buffer.seek(0)
+    return buffer
 
-def handle_mock_command(reply: discord.MessageReference) -> discord.File:
+def handle_mock_command(reply: discord.MessageReference) -> Optional[discord.File]:
     
     if reply is None or reply.resolved is None:
         return None
@@ -130,5 +133,5 @@ def handle_mock_command(reply: discord.MessageReference) -> discord.File:
     if not segments:
         return None
         
-    image_path = create_mock_image(segments)
-    return discord.File(image_path)
+    buffer = create_mock_image(segments)
+    return discord.File(buffer, filename='mock.jpg')
