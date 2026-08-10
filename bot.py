@@ -86,30 +86,7 @@ def _save_disabled_commands():
 def is_command_disabled(guild_id: int, command: str) -> bool:
 	"""Checks if a command is disabled for a specific guild."""
 	return command in disabled_commands.get(str(guild_id), [])
-
-def success_embed(description: str, title: Optional[str] = None) -> discord.Embed:
-	embed = discord.Embed(description=description, color=discord.Color.green())
-	if title:
-		embed.title = title
-	return embed
-
-def error_embed(description: str, title: Optional[str] = None) -> discord.Embed:
-	embed = discord.Embed(description=description, color=discord.Color.red())
-	if title:
-		embed.title = title
-	return embed
-
-def warning_embed(description: str, title: Optional[str] = None) -> discord.Embed:
-	embed = discord.Embed(description=description, color=discord.Color.gold())
-	if title:
-		embed.title = title
-	return embed
-
-def info_embed(description: str, title: Optional[str] = None) -> discord.Embed:
-	embed = discord.Embed(description=description, color=discord.Color.blurple())
-	if title:
-		embed.title = title
-	return embed
+from ui_utils import success_embed, error_embed, warning_embed, info_embed
 
 class SavedPaginationView(discord.ui.View):
 	def __init__(self, invoking_user_id: int, target_user_id: int, keys: list[str], timeout: float = 180.0):
