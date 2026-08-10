@@ -819,7 +819,10 @@ class DiscordBot:
 
 			if is_blacklisted(message.author.id):
 				if message.content.strip().startswith(';;'):
-					await message.reply("You are blacklisted from using this bot.")
+					await message.reply(
+						embed=warning_embed("You are blacklisted from using this bot."),
+						delete_after=constants.AUTO_DELETE_DELAY
+					)
 				return
 
 			await self.process_message(message)
@@ -839,17 +842,26 @@ class DiscordBot:
 		"""Delete a bot message. Users can delete bot replies to their own messages.
 		Bot admins can delete any bot message."""
 		if message.reference is None:
-			await message.reply(embed=warning_embed("You need to reply to a bot message to use this command."))
+			await message.reply(
+				embed=warning_embed("You need to reply to a bot message to use this command."),
+				delete_after=constants.AUTO_DELETE_DELAY
+			)
 			return
 
 		replied_message = message.reference.resolved
 		if replied_message is None:
-			await message.reply(embed=error_embed("Could not fetch the replied message."))
+			await message.reply(
+				embed=error_embed("Could not fetch the replied message."),
+				delete_after=constants.AUTO_DELETE_DELAY
+			)
 			return
 
 		# The replied message must be from the bot
 		if replied_message.author != self.client.user:
-			await message.reply(embed=error_embed("That message was not sent by me."))
+			await message.reply(
+				embed=error_embed("That message was not sent by me."),
+				delete_after=constants.AUTO_DELETE_DELAY
+			)
 			return
 
 		# Check permissions:
@@ -860,7 +872,10 @@ class DiscordBot:
 		if not user_is_admin:
 			# Check if the bot message is a reply to the user's message
 			if replied_message.reference is None:
-				await message.reply(embed=error_embed("You can only delete bot messages that are replies to your own messages."))
+				await message.reply(
+					embed=error_embed("You can only delete bot messages that are replies to your own messages."),
+					delete_after=constants.AUTO_DELETE_DELAY
+				)
 				return
 			# resolved may be None since Discord doesn't recursively resolve references,
 			# so fetch the original message via the API if needed
@@ -869,19 +884,31 @@ class DiscordBot:
 				try:
 					original_message = await message.channel.fetch_message(replied_message.reference.message_id)
 				except (discord.NotFound, discord.HTTPException):
-					await message.reply(embed=error_embed("Could not verify the original message author."))
+					await message.reply(
+						embed=error_embed("Could not verify the original message author."),
+						delete_after=constants.AUTO_DELETE_DELAY
+					)
 					return
 			if original_message.author.id != message.author.id:
-				await message.reply(embed=error_embed("You can only delete bot messages that are replies to your own messages."))
+				await message.reply(
+					embed=error_embed("You can only delete bot messages that are replies to your own messages."),
+					delete_after=constants.AUTO_DELETE_DELAY
+				)
 				return
 
 		try:
 			await replied_message.delete()
 		except discord.Forbidden:
-			await message.reply(embed=error_embed("I don't have permission to delete that message."))
+			await message.reply(
+				embed=error_embed("I don't have permission to delete that message."),
+				delete_after=constants.AUTO_DELETE_DELAY
+			)
 			return
 		except discord.HTTPException as e:
-			await message.reply(embed=error_embed(f"Failed to delete: {e}"))
+			await message.reply(
+				embed=error_embed(f"Failed to delete: {e}"),
+				delete_after=constants.AUTO_DELETE_DELAY
+			)
 			return
 
 		# Try to also delete the ;;delmsg command message
@@ -993,11 +1020,14 @@ class DiscordBot:
 				except OSError:
 					pass
 		elif isinstance(response, discord.Embed):
-			await reply_to.reply(embed=response)
+			await reply_to.reply(embed=response, delete_after=constants.AUTO_DELETE_DELAY)
 		elif isinstance(response, str):
 			if len(response) > 2000:
 				# Always reply to the command message for error responses
-				await message.reply("## Fuck me! Keep it under the 2k character limit of Discord.")
+				await message.reply(
+					embed=error_embed("Message exceeds Discord's 2,000-character limit."),
+					delete_after=constants.AUTO_DELETE_DELAY
+				)
 			else:
 				await reply_to.reply(response)
 		else:

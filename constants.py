@@ -69,3 +69,4 @@ REPLACE			= r';;\S+;;'
 BLACKLIST = []
 
 COMMAND_COOLDOWN = 2  # Cooldown of 2 seconds
+AUTO_DELETE_DELAY = 60  # Auto-delete embeds/status responses after 60 seconds (1 minute)
