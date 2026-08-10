@@ -100,12 +100,15 @@ class DatabaseManager:
 
 	def find_all_keys_by_value(self, value: str) -> list:
 		"""Reverse-lookup: find all (user_id, key) pairs that store this value.
-		Returns a list of all matches found."""
+		Returns a list of all matches found.
+		Comparison is whitespace-normalized to handle trailing spaces
+		from attachment/sticker formatting."""
 		results = []
+		normalized_value = value.strip()
 		for user_id in self.db.keys():
 			user_db = self.db.get(user_id, {})
 			for key, stored_value in user_db.items():
-				if stored_value == value:
+				if stored_value.strip() == normalized_value:
 					results.append((user_id, key))
 		return results
 
@@ -335,9 +338,15 @@ class CommandHandler:
 			if replied_message.author != bot_user:
 				return "You can only use reply mode on messages sent by the bot."
 
+			# Build the value to search for from text content + attachments/stickers
 			value_to_find = replied_message.content.strip()
 			if not value_to_find:
-				return "The replied message has no text content to match."
+				# The message might be purely attachments/stickers with no text
+				attachment_text = self._get_attachments_text(replied_message).strip()
+				if attachment_text:
+					value_to_find = attachment_text
+				else:
+					return "The replied message has no text content to match."
 
 			results = self.db.find_all_keys_by_value(value_to_find)
 			if not results:
@@ -520,13 +529,20 @@ class DiscordBot:
 	async def get_or_create_webhook(self, channel: discord.TextChannel) -> discord.Webhook:
 		"""Finds an existing webhook or creates a new one for puppetting."""
 		# Check cache first
-		if channel.id in self.webhook_cache:
+		if hasattr(channel, 'id') and channel.id in self.webhook_cache:
 			return self.webhook_cache[channel.id]
 		
 		# Check permissions *before* trying
-		me = channel.guild.me
-		if not channel.permissions_for(me).manage_webhooks:
+		guild = getattr(channel, 'guild', None)
+		if not guild:
+			raise discord.Forbidden("Webhooks not supported in non-guild channels.")
+
+		me = guild.me
+		if not me or not hasattr(channel, 'permissions_for') or not channel.permissions_for(me).manage_webhooks:
 			raise discord.Forbidden("Missing 'Manage Webhooks' permission.")
+
+		if not hasattr(channel, 'webhooks'):
+			raise discord.Forbidden("Channel type does not support webhooks.")
 
 		webhooks = await channel.webhooks()
 		for wh in webhooks:
@@ -758,8 +774,6 @@ class DiscordBot:
 			content = response["content"]
 			channel = response["target_channel"]
 
-			fallback_to_normal_reply = False
-
 			# 1. Get the original username
 			original_username = author.display_name
 
@@ -793,37 +807,23 @@ class DiscordBot:
 					avatar_url=author.display_avatar.url
 				)
 
-				# Try to delete the user's original ";;flirt" command
+				# Try to delete the user's original command
 				try:
 					await message.delete()
-				except discord.Forbidden:
-					print(f"Missing 'Manage Messages' perm in {channel.name}")
+				except (discord.Forbidden, discord.HTTPException):
+					channel_name = getattr(channel, 'name', 'channel')
+					print(f"Missing 'Manage Messages' perm in {channel_name}")
 				
-				return # Stop here, we've sent the message
-
-			except discord.Forbidden as e:
-				# Bot lacks 'Manage Webhooks' perm. Fall back to a normal reply.
-				print(f"{e}. Falling back to normal reply in {channel.name}.")
-				response = content # Set response to the text for fallback
-				fallback_to_normal_reply = True
+				return # Stop here, we've sent the message via webhook
 
 			except Exception as e:
-				print(f"Error sending webhook: {e}")
-				# Send an error message instead
-				await message.reply(f"An error occurred: {e}")
-				return
-
-			if not fallback_to_normal_reply:
-				try:
-					# 3. Now, try to delete the original command
-					await message.delete()
-				except discord.Forbidden:
-					# Bot lacks 'Manage Messages' perm, just print and ignore
-					print(f"Missing 'Manage Messages' perm in {channel.name} to delete command.")
-				except Exception as e:
-					# Other error deleting
-					print(f"Error deleting original command: {e}")
-				return
+				# Clear stale webhook from cache if present
+				if hasattr(channel, 'id'):
+					self.webhook_cache.pop(channel.id, None)
+				
+				channel_name = getattr(channel, 'name', 'channel')
+				print(f"Webhook failed ({e}). Falling back to normal reply in {channel_name}.")
+				response = content # Fall back to sending normal message
 
 		reply_to = message.reference.resolved if message.reference and cmd.split()[0] in {
 			'mock', 'deepfry', 'clap', 'zalgo', 'copypasta', 'owo', 'stretch', 'random', 's', 'grandom', 'vaporwave', 'emojify'
