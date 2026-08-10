@@ -12,7 +12,7 @@ from datetime import datetime, timedelta, timezone
 import random
 import json
 
-sys.path.append(os.path.basename(__file__))
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 BLACKLIST_FILE = 'db/blacklist.json'
 DISABLED_COMMANDS_FILE = 'db/disabled_commands.json'
@@ -20,11 +20,29 @@ DISABLED_COMMANDS_FILE = 'db/disabled_commands.json'
 # In-memory store: { "guild_id": ["command1", "command2"] }
 disabled_commands = {}
 
-def is_admin(user_id: int) -> bool:
-	return user_id in do_not_push.ADMINS
+def extract_user_id(mention_or_id: str) -> Optional[int]:
+	"""Extracts integer user ID from a Discord mention (<@123> or <@!123>) or raw ID string."""
+	if not mention_or_id:
+		return None
+	mention_or_id = str(mention_or_id).strip()
+	match = re.match(r'^<@!?(\d+)>$', mention_or_id)
+	if match:
+		return int(match.group(1))
+	if mention_or_id.isdigit():
+		return int(mention_or_id)
+	return None
 
-def is_blacklisted(user_id: int) -> bool:
-	return user_id in constants.BLACKLIST
+def is_admin(user_id: Union[int, str]) -> bool:
+	try:
+		return int(user_id) in do_not_push.ADMINS
+	except (ValueError, TypeError):
+		return False
+
+def is_blacklisted(user_id: Union[int, str]) -> bool:
+	try:
+		return int(user_id) in constants.BLACKLIST
+	except (ValueError, TypeError):
+		return False
 
 def _load_blacklist() -> list:
 	"""Loads the blacklist from the JSON file."""
@@ -69,32 +87,127 @@ def is_command_disabled(guild_id: int, command: str) -> bool:
 	"""Checks if a command is disabled for a specific guild."""
 	return command in disabled_commands.get(str(guild_id), [])
 
+class SavedPaginationView(discord.ui.View):
+	def __init__(self, invoking_user_id: int, target_user_id: int, keys: list[str], timeout: float = 180.0):
+		super().__init__(timeout=timeout)
+		self.invoking_user_id = invoking_user_id
+		self.target_user_id = target_user_id
+		self.keys = keys
+		self.current_page = 0
+		self.per_page = 10
+		self.total_pages = max(1, (len(keys) + self.per_page - 1) // self.per_page)
+		self.message = None
+		self._update_buttons()
+
+	def get_embed(self) -> discord.Embed:
+		start_idx = self.current_page * self.per_page
+		end_idx = start_idx + self.per_page
+		page_keys = self.keys[start_idx:end_idx]
+
+		embed = discord.Embed(
+			title="Saved Keys",
+			description=f"Saved messages for <@{self.target_user_id}>\n\n" + "\n".join([f"- `{k}`" for k in page_keys]),
+			color=discord.Color.blurple()
+		)
+		embed.set_footer(text=f"Page {self.current_page + 1} of {self.total_pages} • Total: {len(self.keys)} key(s)")
+		return embed
+
+	def _update_buttons(self):
+		self.first_button.disabled = (self.current_page == 0)
+		self.prev_button.disabled = (self.current_page == 0)
+		self.page_indicator.label = f"{self.current_page + 1}/{self.total_pages}"
+		self.next_button.disabled = (self.current_page >= self.total_pages - 1)
+		self.last_button.disabled = (self.current_page >= self.total_pages - 1)
+
+	async def interaction_check(self, interaction: discord.Interaction) -> bool:
+		if interaction.user.id != self.invoking_user_id and not is_admin(interaction.user.id):
+			await interaction.response.send_message(
+				"You cannot interact with these buttons because you did not invoke this command.",
+				ephemeral=True
+			)
+			return False
+		return True
+
+	@discord.ui.button(label="⏮️", style=discord.ButtonStyle.secondary, custom_id="saved_first")
+	async def first_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+		self.current_page = 0
+		self._update_buttons()
+		await interaction.response.edit_message(embed=self.get_embed(), view=self)
+
+	@discord.ui.button(label="◀️", style=discord.ButtonStyle.primary, custom_id="saved_prev")
+	async def prev_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+		if self.current_page > 0:
+			self.current_page -= 1
+		self._update_buttons()
+		await interaction.response.edit_message(embed=self.get_embed(), view=self)
+
+	@discord.ui.button(label="1/1", style=discord.ButtonStyle.secondary, disabled=True, custom_id="saved_indicator")
+	async def page_indicator(self, interaction: discord.Interaction, button: discord.ui.Button):
+		pass
+
+	@discord.ui.button(label="▶️", style=discord.ButtonStyle.primary, custom_id="saved_next")
+	async def next_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+		if self.current_page < self.total_pages - 1:
+			self.current_page += 1
+		self._update_buttons()
+		await interaction.response.edit_message(embed=self.get_embed(), view=self)
+
+	@discord.ui.button(label="⏭️", style=discord.ButtonStyle.secondary, custom_id="saved_last")
+	async def last_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+		self.current_page = self.total_pages - 1
+		self._update_buttons()
+		await interaction.response.edit_message(embed=self.get_embed(), view=self)
+
+	async def on_timeout(self):
+		for child in self.children:
+			child.disabled = True
+		if self.message:
+			try:
+				await self.message.edit(view=self)
+			except Exception:
+				pass
+
 class DatabaseManager:
 	def __init__(self, db_name: str):
 		self.db = SqliteDict(db_name, autocommit=True)
 
-	def store_text(self, user: str, key: str, value: str, overwrite=False) -> str:
-		user_db = self.db.get(user, {})
+	def _get_user_entry(self, user: Union[int, str, discord.User, discord.Member]) -> tuple[Union[int, str], dict]:
+		if hasattr(user, 'id'):
+			user = user.id
+
+		if user in self.db:
+			return user, self.db[user]
+
+		alt_user = str(user) if isinstance(user, int) else (int(user) if str(user).isdigit() else user)
+		if alt_user in self.db:
+			return alt_user, self.db[alt_user]
+
+		return user, {}
+
+	def store_text(self, user: Union[int, str, discord.User, discord.Member], key: str, value: str, overwrite=False) -> str:
+		key_user, user_db = self._get_user_entry(user)
 		if key in user_db and not overwrite:
 			return constants.KEY_EXISTS_ADD
 		user_db[key] = value
-		self.db[user] = user_db
+		self.db[key_user] = user_db
 		return constants.SUCCESSFUL
 
-	def retrieve_text(self, user: str, key: str) -> Optional[str]:
-		return self.db.get(user, {}).get(key)
+	def retrieve_text(self, user: Union[int, str, discord.User, discord.Member], key: str) -> Optional[str]:
+		_, user_db = self._get_user_entry(user)
+		return user_db.get(key)
 
-	def get_user_keys(self, user: str) -> list:
-		return list(self.db.get(user, {}).keys())
+	def get_user_keys(self, user: Union[int, str, discord.User, discord.Member]) -> list:
+		_, user_db = self._get_user_entry(user)
+		return list(user_db.keys())
 
 	def close(self):
 		self.db.close()
 
-	def delete_key(self, user: str, key: str) -> bool:
-		user_db = self.db.get(user, {})
+	def delete_key(self, user: Union[int, str, discord.User, discord.Member], key: str) -> bool:
+		key_user, user_db = self._get_user_entry(user)
 		if key in user_db:
 			del user_db[key]
-			self.db[user] = user_db
+			self.db[key_user] = user_db
 			return True
 		return False
 
@@ -186,30 +299,28 @@ class CommandHandler:
 			text += f'[{sticker.name}]({sticker.url}) '
 		return text
 
-	def _handle_saved(self, user: discord.User, args: list, message=None) -> str:
-		if len(args) == 2 and args[1].startswith('<@') and args[1].endswith('>'):
-			if not is_admin(user.id):
-				return "You don't have permission to view another user's keys."
-			find_keys_for = args[1][2:-1]
-			# keys = sorted(self.db.get_user_keys(mentioned_user_id))
-			# return f"Keys for <@{mentioned_user_id}>:\n- " + '\n- '.join(keys) if keys else constants.EMPTY_LIST
+	def _handle_saved(self, user: discord.User, args: list, message=None) -> Union[str, dict]:
+		if len(args) == 2:
+			target_id = extract_user_id(args[1])
+			if target_id is not None:
+				if not is_admin(user.id):
+					return "You don't have permission to view another user's keys."
+				find_keys_for = target_id
+			else:
+				find_keys_for = user.id
 		else:
 			find_keys_for = user.id
 
 		keys = sorted(self.db.get_user_keys(find_keys_for))
 		if len(keys) == 0:
-			return constants.EMPTY_LIST
-		
-		return_text = f'{constants.SAVED_MSGS} <@{str(find_keys_for)}>\n' +\
-							'- ' + '\n- '.join(keys) if keys else constants.EMPTY_LIST
+			return constants.EMPTY_LIST if find_keys_for == user.id else constants.EMPTY_LIST_STEAL
 
-		if isinstance(message.channel, discord.TextChannel) or isinstance(message.channel, discord.VoiceChannel):
-			if message.channel.permissions_for(message.channel.guild.me).add_reactions and \
-						message.channel.permissions_for(message.channel.guild.me).manage_messages:
-				return_text = f'{constants.SAVED_MSGS} <@{str(find_keys_for)}>\n1/{str(len(keys)//10 + 1)}\n' +\
-								'- ' + '\n- '.join([f'`{k}`' for k in keys[:10]]) if keys else constants.EMPTY_LIST
-
-		return return_text
+		view = SavedPaginationView(invoking_user_id=user.id, target_user_id=find_keys_for, keys=keys)
+		return {
+			"type": "saved_pagination",
+			"embed": view.get_embed(),
+			"view": view
+		}
 
 	def _handle_text_transform(self, command_type: str) -> Callable:
 		handlers = {
@@ -366,13 +477,12 @@ class CommandHandler:
 
 		# Mode 2: ;;delkey @user keyname
 		if len(args) == 3:
-			target_mention = args[1]
+			target_user_id = extract_user_id(args[1])
 			key_name = args[2]
 
-			if not target_mention.startswith('<@') or not target_mention.endswith('>'):
+			if target_user_id is None:
 				return "Usage: `;;delkey <@user> <keyname>` or reply to a bot message with `;;delkey`"
 
-			target_user_id = target_mention[2:-1]
 			if self.db.delete_key(target_user_id, key_name):
 				embed = discord.Embed(
 					description=f"Deleted key `{key_name}` from <@{target_user_id}>'s database.",
@@ -385,25 +495,26 @@ class CommandHandler:
 		return "Usage: `;;delkey <@user> <keyname>` or reply to a bot message with `;;delkey`"
 
 	def _handle_steal(self, user: discord.User, args: list, reply) -> str:
-		if len(args) == 2 and '<@' in args[1]:
+		if len(args) == 2 and ('<@' in args[1] or args[1].isdigit()):
 			return constants.WRONG_ARGS_STEAL
 		elif len(args) not in {3, 4}:
 			return constants.WRONG_ARGS
 
-		steal_from = args[1]
-		if not steal_from.startswith('<@') or not steal_from.endswith('>'):
+		steal_from_id = extract_user_id(args[1])
+		if steal_from_id is None:
 			return constants.WRONG_USER_ID
 
-		steal_from = steal_from[2:-1]
 		new_key = args[3] if len(args) == 4 else None
-		return steal.steal(self.db.db, user.id, args[2], steal_from, new_key)
+		return steal.steal(self.db.db, user.id, args[2], steal_from_id, new_key)
 
 	def _handle_blacklist_add(self, user: discord.User, args: list, reply) -> str:
 		if not is_admin(user.id):
 			return "You don't have permission to use this command."
-		if len(args) != 2 or not args[1].startswith('<@') or not args[1].endswith('>'):
+		if len(args) != 2:
+			return "Usage: `;;blacklist_add <@user>`"
+		user_id_to_blacklist = extract_user_id(args[1])
+		if user_id_to_blacklist is None:
 			return "Invalid user mention"
-		user_id_to_blacklist = int(args[1][2:-1])
 		if user_id_to_blacklist in do_not_push.ADMINS:
 			return "You cannot blacklist another admin."
 		if user_id_to_blacklist in constants.BLACKLIST:
@@ -415,9 +526,11 @@ class CommandHandler:
 	def _handle_blacklist_remove(self, user: discord.User, args: list, reply) -> str:
 		if not is_admin(user.id):
 			return "You don't have permission to use this command."
-		if len(args) != 2 or not args[1].startswith('<@') or not args[1].endswith('>'):
+		if len(args) != 2:
+			return "Usage: `;;blacklist_remove <@user>`"
+		user_id_to_remove = extract_user_id(args[1])
+		if user_id_to_remove is None:
 			return "Invalid user mention"
-		user_id_to_remove = int(args[1][2:-1])
 		if user_id_to_remove not in constants.BLACKLIST:
 			return "User is not blacklisted."
 		constants.BLACKLIST.remove(user_id_to_remove)
@@ -573,106 +686,6 @@ class DiscordBot:
 				return
 
 			await self.process_message(message)
-		
-		@self.client.event
-		async def on_reaction_add(reaction, user:discord.User):
-			if user == self.client.user:
-				return
-
-			message = reaction.message
-
-			if not message.channel.permissions_for(message.channel.guild.me).manage_messages or \
-				not message.channel.permissions_for(message.channel.guild.me).add_reactions:
-				return
-
-			if message.author != self.client.user:
-				return
-
-			if message.created_at < datetime.now(timezone.utc) - timedelta(minutes=5):
-				return
-
-			if not message.content.strip().startswith(constants.SAVED_MSGS):
-				return
-
-			# Message format:
-			# Saved messages for: <@userid>
-			# Pageno/total
-			# <content>
-
-			message_lines = message.content.strip().split('\n')
-			numbers = re.findall(r'\d+', message_lines[0]) # Should only contain 1 element
-			if len(numbers) != 1:
-				print('Error updating saved message: Can\'t find author id in: ', message_lines[0], file=sys.stderr)
-				return
-
-			author = numbers[0]
-			if author != str(user.id) and user.id not in do_not_push.ADMINS:
-				await reaction.remove(user)
-				return
-			try:
-				page_no = int(message_lines[1].split('/')[0]) - 1
-			except ValueError:
-				print('Error updating saved message: Can\'t find page no in: ', message_lines[1], file=sys.stderr)
-				return
-			except Exception as e:
-				print('Error updating saved message: Unknown error lmao ' + str(e) , file=sys.stderr)
-				return
-
-			user_saved = sorted(self.db_manager.get_user_keys(author))
-			pages = [user_saved[i:i+10] for i in range(0, len(user_saved), 10)]
-
-			match reaction.emoji:
-				case '▶️':
-					new_page = page_no + 1
-					if len(pages) <= new_page:
-						await reaction.remove(user)
-						return
-					else:
-						new_content = f'{constants.SAVED_MSGS} <@{author}>\n' +\
-										f'{str(new_page+1)}/{str(len(pages))}\n' +\
-										'- ' + '\n- '.join([f'`{k}`' for k in pages[new_page]])
-						await message.edit(content=new_content)
-
-				case '⏭️':
-					new_content = f'{constants.SAVED_MSGS} <@{author}>\n' +\
-									f'{str(len(pages))}/{str(len(pages))}\n' +\
-									'- ' + '\n- '.join([f'`{k}`' for k in pages[-1]])
-					await message.edit(content=new_content)
-
-				case '◀️':
-					new_page = page_no - 1
-					if 0 > new_page:
-						await reaction.remove(user)
-						return
-					else:
-						new_content = f'{constants.SAVED_MSGS} <@{author}>\n' +\
-										f'{str(new_page+1)}/{str(len(pages))}\n' +\
-										'- ' + '\n- '.join([f'`{k}`' for k in pages[new_page]])
-						await message.edit(content=new_content)
-
-				case '⏮️':
-					new_content = f'{constants.SAVED_MSGS} <@{author}>\n' +\
-									f'1/{str(len(pages))}\n' +\
-									'- ' + '\n- '.join([f'`{k}`' for k in pages[0]])
-					await message.edit(content=new_content)
-
-				case _:
-					await reaction.remove(user)
-					return
-
-			try:
-				# await message.clear_reactions()
-				# await message.add_reaction('⏮️')
-				# await message.add_reaction('◀️')
-				# await message.add_reaction('▶️')
-				# await message.add_reaction('⏭️')
-				await reaction.remove(user)
-			except discord.HTTPException:
-				print('Error removing reactions', file=sys.stderr)
-			except discord.Forbidden:
-				print('This shouldn\'t happen :)', file=sys.stderr)
-			except Exception as e:
-				print(e, file=sys.stderr)
 
 
 
@@ -829,7 +842,13 @@ class DiscordBot:
 			'mock', 'deepfry', 'clap', 'zalgo', 'copypasta', 'owo', 'stretch', 'random', 's', 'grandom', 'vaporwave', 'emojify'
 		} else message
 
-		if isinstance(response, discord.File):
+		if isinstance(response, dict) and response.get("type") == "saved_pagination":
+			view = response["view"]
+			embed = response["embed"]
+			resp = await reply_to.reply(embed=embed, view=view)
+			view.message = resp
+			return
+		elif isinstance(response, discord.File):
 			await reply_to.reply(file=response)
 			if hasattr(response.fp, 'name') and isinstance(response.fp.name, str) and os.path.exists(response.fp.name):
 				try:
@@ -843,16 +862,7 @@ class DiscordBot:
 				# Always reply to the command message for error responses
 				await message.reply("## Fuck me! Keep it under the 2k character limit of Discord.")
 			else:
-				resp = await reply_to.reply(response)
-				if cmd == 'saved':
-					if response.strip().startswith(constants.SAVED_MSGS):
-						if isinstance(message.channel, discord.TextChannel) or isinstance(message.channel, discord.VoiceChannel):
-							if message.channel.permissions_for(message.channel.guild.me).add_reactions and \
-								message.channel.permissions_for(message.channel.guild.me).manage_messages:
-								await resp.add_reaction('⏮️')
-								await resp.add_reaction('◀️')
-								await resp.add_reaction('▶️')
-								await resp.add_reaction('⏭️')
+				await reply_to.reply(response)
 		else:
 			print("Unhandled response type:", type(response))
 
@@ -864,8 +874,8 @@ class DiscordBot:
 		finally:
 			# To avoid another data loss due to DB file getting deleted while bot is running
 			if not os.path.exists(constants.DB_NAME):
-				os.makedirs(os.path.dirname(constants.DB_NAME))
-				os.mknod(constants.DB_NAME)
+				os.makedirs(os.path.dirname(constants.DB_NAME), exist_ok=True)
+				open(constants.DB_NAME, 'a').close()
 				backup_db = self.db_manager.copy_database(SqliteDict(constants.DB_NAME + '.bkp', autocommit=True))
 				backup_db.close()
 			self.db_manager.close()
