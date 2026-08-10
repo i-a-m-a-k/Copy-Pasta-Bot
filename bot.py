@@ -87,6 +87,30 @@ def is_command_disabled(guild_id: int, command: str) -> bool:
 	"""Checks if a command is disabled for a specific guild."""
 	return command in disabled_commands.get(str(guild_id), [])
 
+def success_embed(description: str, title: Optional[str] = None) -> discord.Embed:
+	embed = discord.Embed(description=description, color=discord.Color.green())
+	if title:
+		embed.title = title
+	return embed
+
+def error_embed(description: str, title: Optional[str] = None) -> discord.Embed:
+	embed = discord.Embed(description=description, color=discord.Color.red())
+	if title:
+		embed.title = title
+	return embed
+
+def warning_embed(description: str, title: Optional[str] = None) -> discord.Embed:
+	embed = discord.Embed(description=description, color=discord.Color.gold())
+	if title:
+		embed.title = title
+	return embed
+
+def info_embed(description: str, title: Optional[str] = None) -> discord.Embed:
+	embed = discord.Embed(description=description, color=discord.Color.blurple())
+	if title:
+		embed.title = title
+	return embed
+
 class SavedPaginationView(discord.ui.View):
 	def __init__(self, invoking_user_id: int, target_user_id: int, keys: list[str], timeout: float = 180.0):
 		super().__init__(timeout=timeout)
@@ -269,13 +293,15 @@ class CommandHandler:
 		}
 		self.get_bot = get_bot
 
-	def _handle_add(self, user: discord.User, args: list, reply, message, overwrite=False) -> str:
+	def _handle_add(self, user: discord.User, args: list, reply, message, overwrite=False) -> discord.Embed:
 		if len(args) == 1:
-			return constants.WRONG_ARGS_ADD
+			return error_embed("Usage: `;;add <key> <value>` or `;;add <key>` (replying to a message / adding an attachment)")
+
+		key_name = args[1]
 
 		if len(args) == 2:
 			if reply is None and len(message.attachments) == 0:
-				return constants.WRONG_ARGS_ADD
+				return error_embed("Usage: `;;add <key> <value>` or `;;add <key>` (replying to a message / adding an attachment)")
 
 			if reply:
 				original_message = reply.resolved.content.strip() or ''
@@ -285,11 +311,18 @@ class CommandHandler:
 			original_message += self._get_attachments_text(message)
 
 			if not original_message:
-				return constants.EMPTY_MESSAGE
+				return error_embed(constants.EMPTY_MESSAGE)
 
-			return self.db.store_text(user.id, args[1], original_message, overwrite)
+			status = self.db.store_text(user.id, key_name, original_message, overwrite)
+		else:
+			status = self.db.store_text(user.id, key_name, ' '.join(args[2:]), overwrite)
 
-		return self.db.store_text(user.id, args[1], ' '.join(args[2:]), overwrite)
+		if status == constants.SUCCESSFUL:
+			action = "overwritten" if overwrite else "saved"
+			return success_embed(f"Key `{key_name}` has been {action} successfully!")
+		elif status == constants.KEY_EXISTS_ADD:
+			return warning_embed(f"Key `{key_name}` already exists. Use `;;add_o` to overwrite.")
+		return error_embed(status)
 
 	def _get_attachments_text(self, message: discord.Message) -> str:
 		text = ''
@@ -299,12 +332,12 @@ class CommandHandler:
 			text += f'[{sticker.name}]({sticker.url}) '
 		return text
 
-	def _handle_saved(self, user: discord.User, args: list, message=None) -> Union[str, dict]:
+	def _handle_saved(self, user: discord.User, args: list, message=None) -> Union[discord.Embed, dict]:
 		if len(args) == 2:
 			target_id = extract_user_id(args[1])
 			if target_id is not None:
 				if not is_admin(user.id):
-					return "You don't have permission to view another user's keys."
+					return error_embed("You don't have permission to view another user's keys.")
 				find_keys_for = target_id
 			else:
 				find_keys_for = user.id
@@ -313,7 +346,8 @@ class CommandHandler:
 
 		keys = sorted(self.db.get_user_keys(find_keys_for))
 		if len(keys) == 0:
-			return constants.EMPTY_LIST if find_keys_for == user.id else constants.EMPTY_LIST_STEAL
+			msg = "You have not saved any keys yet." if find_keys_for == user.id else f"<@{find_keys_for}> has not saved any keys yet."
+			return info_embed(msg)
 
 		view = SavedPaginationView(invoking_user_id=user.id, target_user_id=find_keys_for, keys=keys)
 		return {
@@ -333,135 +367,143 @@ class CommandHandler:
 			'emojify': emojify.handle_emojify_command
 		}
 
-		def handler(user: discord.User, args: list, reply, message=None) -> str:
+		def handler(user: discord.User, args: list, reply, message=None) -> Union[str, discord.Embed]:
 			if reply is None:
-				return "You need to reply to a message to use this command."
+				return warning_embed("You need to reply to a message to use this command.")
 			return handlers[command_type](reply)
 
 		return handler
 
-	def _handle_delete(self, user: discord.User, args: list, reply) -> str:
+	def _handle_delete(self, user: discord.User, args: list, reply) -> discord.Embed:
 		if len(args) == 1:
-			return constants.WRONG_ARGS_DEL
-		return constants.SUCCESSFUL if self.db.delete_key(user.id, args[1]) else constants.KEY_NOT_FOUND
+			return error_embed("Usage: `;;delete <key>`")
+		key_name = args[1]
+		if self.db.delete_key(user.id, key_name):
+			return success_embed(f"Deleted key `{key_name}` from your saved keys.")
+		return error_embed(f"Key `{key_name}` does not exist.")
 
-	def _handle_delete_me(self, user: discord.User, args: list, reply) -> str:
-		return constants.SUCCESSFUL if delete_me.delete_me(self.db.db, user.id) else constants.EMPTY_LIST
+	def _handle_delete_me(self, user: discord.User, args: list, reply) -> discord.Embed:
+		if delete_me.delete_me(self.db.db, user.id):
+			return success_embed("All your saved keys have been deleted.")
+		return info_embed("You don't have any saved keys to delete.")
 
-	def _handle_rename(self, user: discord.User, args: list, overwrite: bool) -> str:
+	def _handle_rename(self, user: discord.User, args: list, overwrite: bool) -> discord.Embed:
 		if len(args) != 3:
-			return constants.WRONG_ARGS_DEL
-		status = rename_key.rename_key(self.db.db, user.id, args[1], args[2], overwrite)
+			cmd_name = "rename_o" if overwrite else "rename"
+			return error_embed(f"Usage: `;;{cmd_name} <original_key> <new_key>`")
+		old_key, new_key = args[1], args[2]
+		status = rename_key.rename_key(self.db.db, user.id, old_key, new_key, overwrite)
 		match status:
-			case 0: return constants.SUCCESSFUL
-			case -1: return constants.EMPTY_LIST
-			case -2: return constants.KEY_NOT_FOUND
-			case -3: return constants.KEY_EXISTS_RENAME if not overwrite else constants.UNSUCCESSFUL
-			case _: return constants.UNSUCCESSFUL
+			case 0:
+				return success_embed(f"Renamed key `{old_key}` to `{new_key}`.")
+			case -1:
+				return info_embed("You have not saved any keys yet.")
+			case -2:
+				return error_embed(f"Key `{old_key}` does not exist.")
+			case -3:
+				return warning_embed(f"Key `{new_key}` already exists. Use `;;rename_o` to overwrite.")
+			case _:
+				return error_embed("Something went wrong while renaming the key.")
 
-	def _handle_mock(self, user: discord.User, args: list, reply) -> Union[str, discord.File]:
+	def _handle_mock(self, user: discord.User, args: list, reply) -> Union[discord.Embed, discord.File]:
 		if reply is None:
-			return "You need to reply to a message to use this command."
+			return warning_embed("You need to reply to a message to use this command.")
 		return mock.handle_mock_command(reply)
 	
-	def _handle_flirt(self, user: discord.User, args: list, reply, message) -> str:
+	def _handle_flirt(self, user: discord.User, args: list, reply, message) -> Union[dict, discord.Embed]:
 		if len(message.mentions) == 0:
-			return "You need to mention someone to flirt with! Try ;;flirt @username"
+			return warning_embed("You need to mention someone to flirt with! Try `;;flirt @username`")
 		flirt_text = flirt.handle_flirt_command(message)
 
 		return {
 			"type": "puppet",
-			"content": flirt_text,  # <-- This string is sent by the puppet
-			"author": user,         # <-- This user (the command invoker) is the puppet's identity
+			"content": flirt_text,
+			"author": user,
 			"target_channel": message.channel
 		}
 	
 	def _handle_roast(self, user: discord.User, args: list, reply, message) -> dict:
-		# Get the roast text
 		roast_text = roast.handle_roast(message, self.get_bot())
 
-		# Return a "puppet" dictionary
 		return {
 			"type": "puppet",
 			"content": roast_text,
-			"author": user, # This is message.author
+			"author": user,
 			"target_channel": message.channel
 		}
 
-	async def _handle_deepfry(self, user: discord.User, args: list, reply, message=None) -> Union[str, discord.File]:
+	async def _handle_deepfry(self, user: discord.User, args: list, reply, message=None) -> Union[discord.Embed, discord.File]:
 		if reply is None and (message is None or not message.attachments):
-			return "You need to reply to a message with an image to use this command."
+			return warning_embed("You need to reply to a message with an image or attach one to use this command.")
 		return await deepfry.handle_deepfry_command(reply, message)
 
-	async def _handle_dream(self, user: discord.User, args: list, reply) -> Union[str, discord.File, None]:
+	async def _handle_dream(self, user: discord.User, args: list, reply) -> Union[str, discord.File, discord.Embed, None]:
 		return await dream.handle_dream_command(user, args, message=reply)
-		# return "https://cdn.discordapp.com/emojis/1330461299049631764.gif?size=48&animated=true&name=huh%7E2"
 
-	def _handle_disable(self, user: discord.User, args: list, message) -> str:
+	def _handle_disable(self, user: discord.User, args: list, message) -> discord.Embed:
 		member = message.guild.get_member(user.id) if message.guild else None
 		has_server_perms = member and (member.guild_permissions.manage_guild or member.guild_permissions.administrator)
 		if not is_admin(user.id) and not has_server_perms:
-			return "You don't have permission to use this command."
+			return error_embed("You don't have permission to use this command.")
 		if len(args) != 2:
-			return "Usage: `;;disable <command>` (e.g. `;;disable dream`)"
+			return error_embed("Usage: `;;disable <command>` (e.g. `;;disable dream`)")
 		cmd_to_disable = args[1].lower()
 		if cmd_to_disable not in self.commands or cmd_to_disable in ['disable', 'enable']:
-			return f"Cannot disable `{cmd_to_disable}`."
+			return error_embed(f"Cannot disable `{cmd_to_disable}`.")
 		guild_id = str(message.guild.id)
 		if guild_id not in disabled_commands:
 			disabled_commands[guild_id] = []
 		if cmd_to_disable in disabled_commands[guild_id]:
-			return f"`{cmd_to_disable}` is already disabled in this server."
+			return warning_embed(f"`{cmd_to_disable}` is already disabled in this server.")
 		disabled_commands[guild_id].append(cmd_to_disable)
 		_save_disabled_commands()
-		return f"`{cmd_to_disable}` has been disabled in this server."
+		return warning_embed(f"Command `{cmd_to_disable}` has been disabled in this server.", title="🔒 Command Disabled")
 
-	def _handle_enable(self, user: discord.User, args: list, message) -> str:
+	def _handle_enable(self, user: discord.User, args: list, message) -> discord.Embed:
 		member = message.guild.get_member(user.id) if message.guild else None
 		has_server_perms = member and (member.guild_permissions.manage_guild or member.guild_permissions.administrator)
 		if not is_admin(user.id) and not has_server_perms:
-			return "You don't have permission to use this command."
+			return error_embed("You don't have permission to use this command.")
 		if len(args) != 2:
-			return "Usage: `;;enable <command>` (e.g. `;;enable dream`)"
+			return error_embed("Usage: `;;enable <command>` (e.g. `;;enable dream`)")
 		cmd_to_enable = args[1].lower()
 		guild_id = str(message.guild.id)
 		if guild_id not in disabled_commands or cmd_to_enable not in disabled_commands[guild_id]:
-			return f"`{cmd_to_enable}` is not disabled in this server."
+			return info_embed(f"`{cmd_to_enable}` is not currently disabled in this server.")
 		disabled_commands[guild_id].remove(cmd_to_enable)
 		_save_disabled_commands()
-		return f"`{cmd_to_enable}` has been re-enabled in this server."
+		return success_embed(f"Command `{cmd_to_enable}` has been re-enabled in this server.", title="🔓 Command Enabled")
 
-	def _handle_delkey(self, user: discord.User, args: list, reply, message) -> Union[str, discord.Embed]:
+	def _handle_delkey(self, user: discord.User, args: list, reply, message) -> discord.Embed:
 		"""Admin-only command to delete a key from a user's database.
 		Usage 1 (reply): Reply to a bot message with ;;delkey
 		Usage 2 (standalone): ;;delkey @user keyname"""
 		if not is_admin(user.id):
-			return "You don't have permission to use this command."
+			return error_embed("You don't have permission to use this command.")
 
 		# Mode 1: Reply to a bot message with ;;delkey
 		if reply is not None and len(args) == 1:
 			replied_message = reply.resolved
 			if replied_message is None:
-				return "Could not fetch the replied message."
+				return error_embed("Could not fetch the replied message.")
 
 			# The replied message must be from the bot itself
 			bot_user = self.get_bot()
 			if replied_message.author != bot_user:
-				return "You can only use reply mode on messages sent by the bot."
+				return error_embed("You can only use reply mode on messages sent by the bot.")
 
 			# Build the value to search for from text content + attachments/stickers
 			value_to_find = replied_message.content.strip()
 			if not value_to_find:
-				# The message might be purely attachments/stickers with no text
 				attachment_text = self._get_attachments_text(replied_message).strip()
 				if attachment_text:
 					value_to_find = attachment_text
 				else:
-					return "The replied message has no text content to match."
+					return error_embed("The replied message has no text content to match.")
 
 			results = self.db.find_all_keys_by_value(value_to_find)
 			if not results:
-				return "Could not find a key matching that message content."
+				return error_embed("Could not find a key matching that message content.")
 
 			deleted_entries = []
 			for owner_id, key_name in results:
@@ -481,91 +523,111 @@ class CommandHandler:
 			key_name = args[2]
 
 			if target_user_id is None:
-				return "Usage: `;;delkey <@user> <keyname>` or reply to a bot message with `;;delkey`"
+				return error_embed("Usage: `;;delkey <@user> <keyname>` or reply to a bot message with `;;delkey`")
 
 			if self.db.delete_key(target_user_id, key_name):
-				embed = discord.Embed(
+				return discord.Embed(
 					description=f"Deleted key `{key_name}` from <@{target_user_id}>'s database.",
 					color=discord.Color.red()
 				)
-				return embed
 			else:
-				return f"Key `{key_name}` not found for that user."
+				return error_embed(f"Key `{key_name}` not found for that user.")
 
-		return "Usage: `;;delkey <@user> <keyname>` or reply to a bot message with `;;delkey`"
+		return error_embed("Usage: `;;delkey <@user> <keyname>` or reply to a bot message with `;;delkey`")
 
-	def _handle_steal(self, user: discord.User, args: list, reply) -> str:
+	def _handle_steal(self, user: discord.User, args: list, reply) -> discord.Embed:
 		if len(args) == 2 and ('<@' in args[1] or args[1].isdigit()):
-			return constants.WRONG_ARGS_STEAL
+			return error_embed("Please mention a key to steal: `;;steal @user <key> [new_key]`")
 		elif len(args) not in {3, 4}:
-			return constants.WRONG_ARGS
+			return error_embed("Usage: `;;steal @user <key> [new_key]`")
 
 		steal_from_id = extract_user_id(args[1])
 		if steal_from_id is None:
-			return constants.WRONG_USER_ID
+			return error_embed(constants.WRONG_USER_ID)
 
+		old_key = args[2]
 		new_key = args[3] if len(args) == 4 else None
-		return steal.steal(self.db.db, user.id, args[2], steal_from_id, new_key)
+		status = steal.steal(self.db.db, user.id, old_key, steal_from_id, new_key)
+		if status == constants.SUCCESSFUL:
+			dest = f"`{new_key}`" if new_key else f"`{old_key}`"
+			return success_embed(f"Successfully stole key `{old_key}` from <@{steal_from_id}> as {dest}!")
+		elif status == constants.EMPTY_LIST_STEAL:
+			return info_embed(f"<@{steal_from_id}> has not saved any keys yet.")
+		elif status == constants.KEY_NOT_FOUND:
+			return error_embed(f"Key `{old_key}` not found in <@{steal_from_id}>'s saved keys.")
+		elif status == constants.KEY_EXISTS_STEAL:
+			return warning_embed(f"You already have a key named `{old_key}`. Specify a new key name: `;;steal @user {old_key} <new_key>`")
+		return error_embed(status)
 
-	def _handle_blacklist_add(self, user: discord.User, args: list, reply) -> str:
+	def _handle_blacklist_add(self, user: discord.User, args: list, reply) -> discord.Embed:
 		if not is_admin(user.id):
-			return "You don't have permission to use this command."
+			return error_embed("You don't have permission to use this command.")
 		if len(args) != 2:
-			return "Usage: `;;blacklist_add <@user>`"
+			return error_embed("Usage: `;;blacklist_add <@user>`")
 		user_id_to_blacklist = extract_user_id(args[1])
 		if user_id_to_blacklist is None:
-			return "Invalid user mention"
+			return error_embed("Invalid user mention or ID.")
 		if user_id_to_blacklist in do_not_push.ADMINS:
-			return "You cannot blacklist another admin."
+			return error_embed("You cannot blacklist another admin.")
 		if user_id_to_blacklist in constants.BLACKLIST:
-			return "User is already blacklisted."
+			return warning_embed("User is already blacklisted.")
 		constants.BLACKLIST.append(user_id_to_blacklist)
 		_save_blacklist()
-		return f"User <@{user_id_to_blacklist}> has been blacklisted."
+		return discord.Embed(description=f"🚫 User <@{user_id_to_blacklist}> has been blacklisted.", color=discord.Color.dark_red())
 
-	def _handle_blacklist_remove(self, user: discord.User, args: list, reply) -> str:
+	def _handle_blacklist_remove(self, user: discord.User, args: list, reply) -> discord.Embed:
 		if not is_admin(user.id):
-			return "You don't have permission to use this command."
+			return error_embed("You don't have permission to use this command.")
 		if len(args) != 2:
-			return "Usage: `;;blacklist_remove <@user>`"
+			return error_embed("Usage: `;;blacklist_remove <@user>`")
 		user_id_to_remove = extract_user_id(args[1])
 		if user_id_to_remove is None:
-			return "Invalid user mention"
+			return error_embed("Invalid user mention or ID.")
 		if user_id_to_remove not in constants.BLACKLIST:
-			return "User is not blacklisted."
+			return info_embed("User is not currently blacklisted.")
 		constants.BLACKLIST.remove(user_id_to_remove)
 		_save_blacklist()
-		return f"User <@{user_id_to_remove}> has been removed from the blacklist."
+		return success_embed(f"User <@{user_id_to_remove}> has been removed from the blacklist.")
 
-	def _handle_random(self, user: discord.User, args:list) -> str:
-		if len(args) != 1 and len(args) != 2:
-			return constants.WRONG_ARGS
-		
+	def _handle_random(self, user: discord.User, args: list) -> Union[str, discord.Embed]:
+		if len(args) not in {1, 2}:
+			return error_embed("Usage: `;;random [search_term]`")
+
 		search_term = args[1] if len(args) == 2 else None
 		return random_key.random_key(self.db.db, user.id, search_term)
 
-	def _handle_grandom(self, user: discord.User, args:list) -> str:
+	def _handle_grandom(self, user: discord.User, args: list) -> Union[str, discord.Embed]:
+		if len(args) not in {1, 2}:
+			return error_embed("Usage: `;;grandom [search_term]`")
 
-		if len(args) != 1 and len(args) != 2:
-			return constants.WRONG_ARGS
-		
 		search_term = args[1] if len(args) == 2 else None
 		return grandom_key.grandom_key(self.db.db, search_term)
 
-	def _handle_search(self, user: discord.User, args: list) -> str:
+	def _handle_search(self, user: discord.User, args: list) -> discord.Embed:
 		if len(args) != 2:
-			return constants.WRONG_ARGS
-		return search.search(self.db.db, user.id, args[1])
+			return error_embed("Usage: `;;search <term>`")
+		search_key = args[1]
+		user_keys = self.db.get_user_keys(user.id)
+		matches = sorted([k for k in user_keys if search_key in k])
+		if not matches:
+			return info_embed(f"No keys found matching `{search_key}`.")
+		embed = discord.Embed(
+			title=f"Search Results for `{search_key}`",
+			description="\n".join([f"- `{k}`" for k in matches]),
+			color=discord.Color.blurple()
+		)
+		embed.set_footer(text=f"Found {len(matches)} match(es)")
+		return embed
 
-	def _handle_gsearch(self, user: discord.User, args: list) -> str:
+	def _handle_gsearch(self, user: discord.User, args: list) -> discord.Embed:
 		"""Admin-only global search across all users' keys."""
 		if not is_admin(user.id):
-			return "You don't have permission to use this command."
+			return error_embed("You don't have permission to use this command.")
 		if len(args) != 2:
-			return "Usage: `;;gsearch <term>`"
+			return error_embed("Usage: `;;gsearch <term>`")
 		return gsearch.gsearch(self.db.db, args[1])
 
-	async def handle_command(self, user: discord.User, cmd: str, reply=None, message=None) -> Optional[Union[str, discord.File]]:
+	async def handle_command(self, user: discord.User, cmd: str, reply=None, message=None) -> Optional[Union[str, discord.File, discord.Embed, dict]]:
 		if cmd.startswith(';;'):
 			cmd = cmd[2:]
 
@@ -578,24 +640,99 @@ class CommandHandler:
 			# Check if command is disabled for this server
 			if message and hasattr(message, 'guild') and message.guild:
 				if is_command_disabled(message.guild.id, command):
-					return f"`{command}` is disabled in this server."
+					return warning_embed(f"Command `{command}` is disabled in this server.", title="🔒 Command Disabled")
 			if command in ['dream', 'deepfry']:
 				return await self.commands[command](user, args, reply, message)
 			else:
 				return self.commands[command](user, args, reply, message)
 		return None
 
-	def _handle_help(self, args) -> str:
+	def _handle_help(self, args) -> discord.Embed:
 		if len(args) != 2:
-			return constants.HELP_TEXT
+			embed = discord.Embed(
+				title="CopyPastaBot Help",
+				description="Save custom copypastas, recall them dynamically, and use meme commands!",
+				color=discord.Color.blurple()
+			)
+			embed.add_field(
+				name="Basic Usage",
+				value="• `;;<cmd>` : Run a bot command\n• `;;<key>;;` : Recall a saved text anywhere in your message",
+				inline=False
+			)
+			embed.add_field(
+				name="Detailed Categories",
+				value="• `;;help copypasta` : Key storage, management, and searching\n• `;;help memes` : Meme generators, image deepfrying, text transformers",
+				inline=False
+			)
+			embed.set_footer(text="Tip: You can attach images or reply to messages when saving keys!")
+			return embed
 
 		match args[1].lower():
 			case 'copypasta':
-				return constants.HELP_TEXT_CP
+				embed = discord.Embed(
+					title="Copypasta Commands",
+					description="Save, manage, and retrieve your custom copypastas.",
+					color=discord.Color.blurple()
+				)
+				embed.add_field(
+					name="Saving & Managing Keys",
+					value=(
+						"• **`add <key> <message>`** : Save text (or reply to message/attach media)\n"
+						"• **`add_o <key> <message>`** : Save text and overwrite if exists\n"
+						"• **`saved`** : Interactive paginated list of your saved keys\n"
+						"• **`delete <key>`** : Delete a key\n"
+						"• **`delete_me`** : Delete all your saved keys\n"
+						"• **`rename <old> <new>`** : Rename a key\n"
+						"• **`rename_o <old> <new>`** : Rename a key (overwrite)"
+					),
+					inline=False
+				)
+				embed.add_field(
+					name="Finding & Stealing Keys",
+					value=(
+						"• **`steal <@user> <key> [new]`** : Steal a key from another user\n"
+						"• **`random [term]`** : Send a random saved key (optional search filter)\n"
+						"• **`search <term>`** : Search through your saved keys"
+					),
+					inline=False
+				)
+				return embed
+
 			case 'memes':
-				return constants.HELP_TEXT_MEMES
+				embed = discord.Embed(
+					title="Meme Commands",
+					description="Transform text and generate meme media by replying to messages.",
+					color=discord.Color.blurple()
+				)
+				embed.add_field(
+					name="Text Transformers (Reply to a message)",
+					value=(
+						"• **`mock`** : Mock a message with image\n"
+						"• **`clap`** : Add 👏 between words\n"
+						"• **`zalgo`** : Add cursed text effects\n"
+						"• **`owo`** : OwOify text\n"
+						"• **`copypasta`** : Generate copypasta emojis\n"
+						"• **`stretch`** : Streeeeetch vowels\n"
+						"• **`vaporwave`** : Ｃｏｎｖｅｒｔ ｔｏ ｆｕｌｌｗｉｄｔｈ\n"
+						"• **`emojify`** : Convert text to 🇪 🇲 🇴 🇯 🇮 🇸\n"
+						"• **`s <pattern> <replace> [flags]`** : Vim regex substitute"
+					),
+					inline=False
+				)
+				embed.add_field(
+					name="Interactive & Media",
+					value=(
+						"• **`deepfry`** : Deep fry image with eye flares (Reply / Attach)\n"
+						"• **`roast <@user>`** : Roast a tagged user\n"
+						"• **`flirt <@user>`** : Flirt with a tagged user\n"
+						"• **`dream <prompt>`** : AI image & video generation (`-v`, `-i2v`)"
+					),
+					inline=False
+				)
+				return embed
+
 			case _:
-				return constants.HELP_TEXT
+				return self._handle_help([])
 
 class DiscordBot:
 	def __init__(self, token: str):
@@ -702,17 +839,17 @@ class DiscordBot:
 		"""Delete a bot message. Users can delete bot replies to their own messages.
 		Bot admins can delete any bot message."""
 		if message.reference is None:
-			await message.reply("You need to reply to a bot message to use this command.")
+			await message.reply(embed=warning_embed("You need to reply to a bot message to use this command."))
 			return
 
 		replied_message = message.reference.resolved
 		if replied_message is None:
-			await message.reply("Could not fetch the replied message.")
+			await message.reply(embed=error_embed("Could not fetch the replied message."))
 			return
 
 		# The replied message must be from the bot
 		if replied_message.author != self.client.user:
-			await message.reply("That message was not sent by me.")
+			await message.reply(embed=error_embed("That message was not sent by me."))
 			return
 
 		# Check permissions:
@@ -723,7 +860,7 @@ class DiscordBot:
 		if not user_is_admin:
 			# Check if the bot message is a reply to the user's message
 			if replied_message.reference is None:
-				await message.reply("You can only delete bot messages that are replies to your own messages.")
+				await message.reply(embed=error_embed("You can only delete bot messages that are replies to your own messages."))
 				return
 			# resolved may be None since Discord doesn't recursively resolve references,
 			# so fetch the original message via the API if needed
@@ -732,19 +869,19 @@ class DiscordBot:
 				try:
 					original_message = await message.channel.fetch_message(replied_message.reference.message_id)
 				except (discord.NotFound, discord.HTTPException):
-					await message.reply("Could not verify the original message author.")
+					await message.reply(embed=error_embed("Could not verify the original message author."))
 					return
 			if original_message.author.id != message.author.id:
-				await message.reply("You can only delete bot messages that are replies to your own messages.")
+				await message.reply(embed=error_embed("You can only delete bot messages that are replies to your own messages."))
 				return
 
 		try:
 			await replied_message.delete()
 		except discord.Forbidden:
-			await message.reply("I don't have permission to delete that message.")
+			await message.reply(embed=error_embed("I don't have permission to delete that message."))
 			return
 		except discord.HTTPException as e:
-			await message.reply(f"Failed to delete: {e}")
+			await message.reply(embed=error_embed(f"Failed to delete: {e}"))
 			return
 
 		# Try to also delete the ;;delmsg command message
