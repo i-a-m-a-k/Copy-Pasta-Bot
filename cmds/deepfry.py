@@ -1,6 +1,7 @@
 import io
+import asyncio
 import aiohttp
-from discord import File, Attachment
+from discord import File, Attachment, Embed
 from PIL import Image
 import numpy as np
 import deeppyer
@@ -8,6 +9,7 @@ import os
 from typing import Optional, Union
 
 import mediapipe as mp
+from ui_utils import error_embed, warning_embed
 
 # Lens flare asset path
 ASSETS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'assets')
@@ -37,7 +39,6 @@ def _load_lens_flare() -> Optional[Image.Image]:
         data[:,:,3] = np.clip(luminance * 2, 0, 255).astype(np.uint8)
         # Tint the flare
         data[:,:,0] = np.clip(data[:,:,0].astype(np.float32) * 1.5, 0, 255).astype(np.uint8)  # Boost red
-        #data[:,:,1] = (data[:,:,1] * 0.3).astype(np.uint8)  # Suppress green
         data[:,:,2] = (data[:,:,2] * 0.3).astype(np.uint8)  # Suppress blue
         return Image.fromarray(data)
     except Exception as e:
@@ -45,7 +46,6 @@ def _load_lens_flare() -> Optional[Image.Image]:
         return None
 
 def is_supported_format(attachment: Attachment) -> bool:
-    
     # List of explicitly supported MIME types
     supported_types = [
         'image/png',
@@ -58,12 +58,12 @@ def is_supported_format(attachment: Attachment) -> bool:
     return (attachment.content_type in supported_types or 
             (attachment.filename.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.webp', '.tiff'))))
 
-async def process_image(image_data: bytes) -> Optional[Image.Image]:
-    """Process image data into a PIL Image, handling different formats."""
+def _process_image_bytes(image_data: bytes) -> Optional[Image.Image]:
+    """Process image data into a PIL Image, handling different formats (run in thread pool)."""
     try:
         img = Image.open(io.BytesIO(image_data))
         
-        if img.format == 'GIF' and img.is_animated:
+        if img.format == 'GIF' and getattr(img, 'is_animated', False):
             img.seek(0)
         
         if img.mode in ('RGBA', 'LA') or (img.mode == 'P' and 'transparency' in img.info):
@@ -77,7 +77,7 @@ async def process_image(image_data: bytes) -> Optional[Image.Image]:
             
         return img
     except Exception as e:
-        print(f"Error processing image: {str(e)}")
+        print(f"Error processing image bytes: {str(e)}")
         return None
 
 def _get_eye_positions(img: Image.Image) -> list[tuple[int, int, int]]:
@@ -155,7 +155,6 @@ def _overlay_lens_flare(img: Image.Image, eyes: list[tuple[int, int, int]]) -> I
         flare_layer.paste(resized_flare, (paste_x, paste_y))
         
         # Use screen blending: result = 1 - (1 - base) * (1 - overlay)
-        # This makes the flare additive/bright instead of just pasting over
         base = np.array(img_rgba, dtype=np.float32) / 255.0
         overlay = np.array(flare_layer, dtype=np.float32) / 255.0
         
@@ -209,19 +208,35 @@ def _add_red_tint_to_faces(img: Image.Image) -> Image.Image:
     
     return Image.fromarray(img_array)
 
+def _process_deepfry_sync(img: Image.Image) -> Image.Image:
+    """Synchronous CPU-bound image processing: face mesh, face tint, and lens flare."""
+    try:
+        # Detect eyes with MediaPipe FaceMesh
+        eyes = _get_eye_positions(img)
+        # Add red tint to faces with MediaPipe FaceDetection
+        img = _add_red_tint_to_faces(img)
+        # Overlay lens flare on eyes
+        img = _overlay_lens_flare(img, eyes)
+        return img
+    except Exception as e:
+        print(f"Error in _process_deepfry_sync: {str(e)}")
+        return img
+
+def _save_image_to_bytes(img: Image.Image) -> io.BytesIO:
+    """Synchronous PNG compression of PIL image into BytesIO buffer."""
+    output = io.BytesIO()
+    img.save(output, format='PNG')
+    output.seek(0)
+    return output
+
 async def deep_fry_image(img: Image.Image) -> Image.Image:
     """
     Deep fry an image with face detection, red tinting, and lens flare eyes.
+    Offloads heavy MediaPipe inference and array transforms to a background thread.
     """
     try:
-        # Detect eyes
-        eyes = _get_eye_positions(img)
-        
-        # Add red tint to faces
-        img = _add_red_tint_to_faces(img)
-        
-        # Overlay lens flare on eyes
-        img = _overlay_lens_flare(img, eyes)
+        # Run CPU-bound MediaPipe detection and lens flare overlay in worker thread
+        img = await asyncio.to_thread(_process_deepfry_sync, img)
         
         # Apply deeppyer for additional deep frying effects
         fried_img = await deeppyer.deepfry(img, flares=False)
@@ -231,7 +246,7 @@ async def deep_fry_image(img: Image.Image) -> Image.Image:
         print(f"Error in deep_fry_image: {str(e)}")
         return img
 
-async def handle_deepfry_command(reply, message=None) -> Union[File, str]:
+async def handle_deepfry_command(reply, message=None) -> Union[File, Embed]:
     """
     Deep fry an image from a replied-to message or the command message itself.
     
@@ -239,7 +254,7 @@ async def handle_deepfry_command(reply, message=None) -> Union[File, str]:
         reply: The message reference (message.reference)
         message: The command message itself (for checking its own attachments)
     Returns:
-        Union[File, str]: The deep-fried image as a Discord file or error message
+        Union[File, Embed]: The deep-fried image as a Discord file or error embed
     """
     image_attachment = None
     
@@ -272,25 +287,23 @@ async def handle_deepfry_command(reply, message=None) -> Union[File, str]:
                 break
     
     if not image_attachment:
-        return "Cannot deep fry - no valid image found in the message."
+        return warning_embed("Cannot deep fry — no valid image found in the message or attachment.", title="⚠️ Image Not Found")
 
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(image_attachment.url) as response:
                 if response.status != 200:
-                    return "Failed to download the image."
+                    return error_embed(f"Failed to download the image from Discord CDN (HTTP {response.status}).")
                 image_data = await response.read()
 
-        pil_image = await process_image(image_data)
+        pil_image = await asyncio.to_thread(_process_image_bytes, image_data)
         if pil_image is None:
-            return "Failed to process the image format."
+            return error_embed("Failed to process the image format.")
 
         fried_img = await deep_fry_image(pil_image)
 
-        output = io.BytesIO()
-        fried_img.save(output, format='PNG')
-        output.seek(0)
+        output = await asyncio.to_thread(_save_image_to_bytes, fried_img)
         return File(output, filename='deepfried.png')
 
     except Exception as e:
-        return f"Error deep frying image: {str(e)}"
+        return error_embed(f"Error deep frying image: {str(e)}", title="❌ Deepfry Error")
