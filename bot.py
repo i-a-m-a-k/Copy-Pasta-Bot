@@ -86,7 +86,7 @@ def _save_disabled_commands():
 def is_command_disabled(guild_id: int, command: str) -> bool:
 	"""Checks if a command is disabled for a specific guild."""
 	return command in disabled_commands.get(str(guild_id), [])
-from ui_utils import success_embed, error_embed, warning_embed, info_embed
+from ui_utils import success_embed, error_embed, warning_embed, info_embed, close_http_session
 
 class SavedPaginationView(discord.ui.View):
 	def __init__(self, invoking_user_id: int, target_user_id: int, keys: list[str], timeout: float = 180.0):
@@ -383,9 +383,12 @@ class CommandHandler:
 				return error_embed("Something went wrong while renaming the key.")
 
 	def _handle_mock(self, user: discord.User, args: list, reply) -> Union[discord.Embed, discord.File]:
-		if reply is None:
+		if reply is None or reply.resolved is None:
 			return warning_embed("You need to reply to a message to use this command.")
-		return mock.handle_mock_command(reply)
+		result = mock.handle_mock_command(reply)
+		if result is None:
+			return warning_embed("The message you replied to contains no text to mock.", title="⚠️ No Text Found")
+		return result
 	
 	def _handle_flirt(self, user: discord.User, args: list, reply, message) -> Union[dict, discord.Embed]:
 		if len(message.mentions) == 0:
@@ -1023,6 +1026,10 @@ class DiscordBot:
 				backup_db = self.db_manager.copy_database(SqliteDict(constants.DB_NAME + '.bkp', autocommit=True))
 				backup_db.close()
 			self.db_manager.close()
+			try:
+				asyncio.run(close_http_session())
+			except Exception:
+				pass
 
 if __name__ == '__main__':
 	bot = DiscordBot(do_not_push.API_TOKEN)

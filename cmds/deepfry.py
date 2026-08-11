@@ -1,7 +1,6 @@
 import io
 import asyncio
-import aiohttp
-from discord import File, Attachment, Embed
+from discord import File, Embed
 from PIL import Image
 import numpy as np
 import deeppyer
@@ -9,7 +8,7 @@ import os
 from typing import Optional, Union
 
 import mediapipe as mp
-from ui_utils import error_embed, warning_embed
+from ui_utils import error_embed, warning_embed, extract_image_url, fetch_image_bytes
 
 # Lens flare asset path
 ASSETS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'assets')
@@ -44,19 +43,6 @@ def _load_lens_flare() -> Optional[Image.Image]:
     except Exception as e:
         print(f"Error loading lens flare: {e}")
         return None
-
-def is_supported_format(attachment: Attachment) -> bool:
-    # List of explicitly supported MIME types
-    supported_types = [
-        'image/png',
-        'image/jpeg',
-        'image/gif',
-        'image/webp',
-        'image/tiff'
-    ]
-    
-    return (attachment.content_type in supported_types or 
-            (attachment.filename.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.webp', '.tiff'))))
 
 def _process_image_bytes(image_data: bytes) -> Optional[Image.Image]:
     """Process image data into a PIL Image, handling different formats (run in thread pool)."""
@@ -249,52 +235,15 @@ async def deep_fry_image(img: Image.Image) -> Image.Image:
 async def handle_deepfry_command(reply, message=None) -> Union[File, Embed]:
     """
     Deep fry an image from a replied-to message or the command message itself.
-    
-    Args:
-        reply: The message reference (message.reference)
-        message: The command message itself (for checking its own attachments)
-    Returns:
-        Union[File, Embed]: The deep-fried image as a Discord file or error embed
     """
-    image_attachment = None
-    
-    # Priority 1: Check the replied-to message
-    if reply and reply.resolved and hasattr(reply.resolved, 'attachments'):
-        for attachment in reply.resolved.attachments:
-            if is_supported_format(attachment):
-                image_attachment = attachment
-                break
-        
-        # Check embeds on the replied-to message
-        if not image_attachment:
-            embeds = getattr(reply.resolved, 'embeds', [])
-            for embed in embeds:
-                if embed.image:
-                    class MockAttachment:
-                        def __init__(self, url):
-                            self.url = url
-                            clean_url = url.split('?')[0]
-                            self.filename = clean_url.split('/')[-1]
-                            self.content_type = 'image/png'
-                    image_attachment = MockAttachment(embed.image.url)
-                    break
-    
-    # Priority 2: Check the command message's own attachments
-    if not image_attachment and message:
-        for attachment in message.attachments:
-            if is_supported_format(attachment):
-                image_attachment = attachment
-                break
-    
-    if not image_attachment:
+    image_url = extract_image_url(reply, message)
+    if not image_url:
         return warning_embed("Cannot deep fry — no valid image found in the message or attachment.", title="⚠️ Image Not Found")
 
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(image_attachment.url) as response:
-                if response.status != 200:
-                    return error_embed(f"Failed to download the image from Discord CDN (HTTP {response.status}).")
-                image_data = await response.read()
+        image_data, error_msg = await fetch_image_bytes(image_url)
+        if error_msg or not image_data:
+            return error_embed(error_msg or "Failed to download the image.")
 
         pil_image = await asyncio.to_thread(_process_image_bytes, image_data)
         if pil_image is None:

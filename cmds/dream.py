@@ -16,7 +16,14 @@ import math
 import os
 import csv
 from datetime import datetime
-from ui_utils import error_embed, warning_embed, info_embed, success_embed
+from ui_utils import (
+	error_embed,
+	warning_embed,
+	info_embed,
+	success_embed,
+	get_http_session,
+	extract_image_url
+)
 
 # Dictionary to track user cooldowns
 user_cooldowns = {}
@@ -174,35 +181,10 @@ async def handle_dream_command(user, args, message=None):
 		if requires_replied_image:
 			if not message:
 				return warning_embed("This generation type requires you to reply to a message containing an image.", title="⚠️ Image Required")
-				
-			# In your implementation, 'message' is already the MessageReference object
-			# Get the resolved message directly
-			replied_to = message.resolved
-			if not replied_to:
-				return error_embed("Could not find the message you're replying to.")
-			
-			# Check if the message has attachments and at least one is an image
-			image_url = None
-			if replied_to.attachments:
-				for attachment in replied_to.attachments:
-					if hasattr(attachment, "content_type") and attachment.content_type and attachment.content_type.startswith('image/'):
-						image_url = attachment.url
-						break
-			
-			# Check for embeds with images if no attachments found
-			if not image_url and replied_to.embeds:
-				for embed in replied_to.embeds:
-					if embed.image:
-						image_url = embed.image.url
-						break
-			
+
+			image_url = extract_image_url(reply=message)
 			if not image_url:
-				return warning_embed("The message you replied to doesn't contain any images.", title="⚠️ Image Not Found")
-			
-			async with aiohttp.ClientSession() as session:
-				async with session.get(image_url) as image_response:
-					if image_response.status != 200:
-						return error_embed(f"Failed to download the image from Discord CDN: HTTP {image_response.status}")
+				return warning_embed("The message you replied to doesn't contain any valid images.", title="⚠️ Image Not Found")
 		
 		num_advanced_flags = sum([has_iref, has_sref, has_cref, has_modify])
 		if num_advanced_flags > 1:
@@ -240,25 +222,25 @@ async def handle_dream_command(user, args, message=None):
 			openai_key = getattr(do_not_push, "OPENAI_API_KEY", "")
 			if openai_key:
 				try:
-					async with aiohttp.ClientSession() as session:
-						async with session.post(
-							"https://api.openai.com/v1/moderations",
-							headers={"Authorization": f"Bearer {openai_key}", "Content-Type": "application/json"},
-							json={"input": prompt},
-							timeout=aiohttp.ClientTimeout(total=5)
-						) as mod_response:
-							if mod_response.status == 200:
-								mod_data = await mod_response.json()
-								if mod_data["results"][0]["flagged"]:
-									if not is_admin:
-										await asyncio.to_thread(
-											add_banned_user,
-											user_id=user.id,
-											username=user.name if hasattr(user, 'name') else str(user),
-											prompt=prompt
-										)
-										return error_embed("Your prompt was flagged by our safety system for inappropriate content. You have been banned from using the dream command.", title="🚫 Moderation Violation")
-									return warning_embed("Your prompt was flagged by the safety system for inappropriate content.", title="⚠️ Safety Warning")
+					session = await get_http_session()
+					async with session.post(
+						"https://api.openai.com/v1/moderations",
+						headers={"Authorization": f"Bearer {openai_key}", "Content-Type": "application/json"},
+						json={"input": prompt},
+						timeout=aiohttp.ClientTimeout(total=5)
+					) as mod_response:
+						if mod_response.status == 200:
+							mod_data = await mod_response.json()
+							if mod_data["results"][0]["flagged"]:
+								if not is_admin:
+									await asyncio.to_thread(
+										add_banned_user,
+										user_id=user.id,
+										username=user.name if hasattr(user, 'name') else str(user),
+										prompt=prompt
+									)
+									return error_embed("Your prompt was flagged by our safety system for inappropriate content. You have been banned from using the dream command.", title="🚫 Moderation Violation")
+								return warning_embed("Your prompt was flagged by the safety system for inappropriate content.", title="⚠️ Safety Warning")
 				except Exception as e:
 					print(f"Moderation API error: {e}")
 
@@ -417,12 +399,12 @@ async def handle_dream_command(user, args, message=None):
 			status="success"
 		)
 		
-		# Download the generated content directly into memory using aiohttp
-		async with aiohttp.ClientSession() as session:
-			async with session.get(media_url) as media_response:
-				if media_response.status != 200:
-					return error_embed(f"Failed to download generated media: HTTP {media_response.status}")
-				media_content = await media_response.read()
+		# Download the generated content directly into memory using shared aiohttp session
+		session = await get_http_session()
+		async with session.get(media_url) as media_response:
+			if media_response.status != 200:
+				return error_embed(f"Failed to download generated media: HTTP {media_response.status}")
+			media_content = await media_response.read()
 
 		buffer = io.BytesIO(media_content)
 		buffer.seek(0)
