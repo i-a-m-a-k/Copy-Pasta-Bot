@@ -1,4 +1,7 @@
+import os
+
 DB_NAME             = './db/mysqlite.db'
+ASSETS_DIR          = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'assets')
 KEY_EXISTS_ADD      = 'Could not add because this key already exists. Use `add_o` to overwrite.'
 KEY_EXISTS_RENAME   = 'Could not rename because this key already exists. Use `rename_o` to overwrite.'
 KEY_EXISTS_STEAL    = 'Could not steal because this key already exists. Provide new key name as well.'

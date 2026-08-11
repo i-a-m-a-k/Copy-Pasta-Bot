@@ -4,13 +4,12 @@ import re
 from PIL import Image, ImageDraw, ImageFont
 import discord
 from typing import Optional
+import constants
 
 def get_asset_path(filename: str) -> str:
-    root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    return os.path.join(root_dir, 'assets', filename)
+    return os.path.join(constants.ASSETS_DIR, filename)
 
 def process_text(message: discord.Message, content: str) -> list:
-
     # Create a mapping of user IDs to display names
     user_mentions = {
         str(user.id): user.display_name
@@ -55,14 +54,12 @@ def process_text(message: discord.Message, content: str) -> list:
     return processed_segments
 
 def convert_to_mock_case(text: str) -> str:
-    
     # Remove markdown formatting (##, **, __, etc.)
     clean_text = discord.utils.remove_markdown(text)
     # Convert to mocking case
     return ''.join(c.upper() if i % 2 else c.lower() for i, c in enumerate(clean_text))
 
 def fit_text_to_width(draw, text: str, font: ImageFont.FreeTypeFont, max_width: int) -> str:
-   
     if draw.textlength(text, font=font) <= max_width:
         return text
 
@@ -78,7 +75,6 @@ def fit_text_to_width(draw, text: str, font: ImageFont.FreeTypeFont, max_width: 
     return text[:left] + "..."
 
 def create_mock_image(segments: list) -> io.BytesIO:
-    
     # Process each segment according to whether it should be mocked
     processed_text = ''
     for text, should_mock in segments:
@@ -124,7 +120,6 @@ def create_mock_image(segments: list) -> io.BytesIO:
     return buffer
 
 def handle_mock_command(reply: discord.MessageReference) -> Optional[discord.File]:
-    
     if reply is None or reply.resolved is None:
         return None
     

@@ -1,8 +1,8 @@
 from typing import Callable, Union, Optional
 import discord
 from ui.embeds import warning_embed
-from cmds import flirt
-from cmds import roast
+from . import flirt
+from . import roast
 
 def handle_flirt(
 	user: discord.User,

@@ -8,11 +8,11 @@ import os
 from typing import Optional, Union
 
 import mediapipe as mp
+import constants
 from ui_utils import error_embed, warning_embed, extract_image_url, fetch_image_bytes
 
 # Lens flare asset path
-ASSETS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'assets')
-LENS_FLARE_PATH = os.path.join(ASSETS_DIR, 'lens_flare.png')
+LENS_FLARE_PATH = os.path.join(constants.ASSETS_DIR, 'lens_flare.png')
 
 # MediaPipe FaceMesh iris landmarks
 # Left iris: 468-472, Right iris: 473-477

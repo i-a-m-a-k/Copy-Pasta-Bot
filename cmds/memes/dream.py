@@ -12,7 +12,6 @@ import do_not_push
 import time
 import argparse
 import shlex
-import math
 import os
 import csv
 from datetime import datetime
@@ -30,9 +29,7 @@ user_cooldowns = {}
 pending_logs = {}
 
 def log_dream_command(user_id, username, prompt, generation_type, media_url=None, status="success"):
-
 	log_file = "db/dream_logs.csv"
-	
 	timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 	if not media_url:
@@ -43,50 +40,35 @@ def log_dream_command(user_id, username, prompt, generation_type, media_url=None
 		del pending_logs[user_id]
 
 	os.makedirs(os.path.dirname(log_file), exist_ok=True)
-
 	file_exists = os.path.isfile(log_file)
 
 	with open(log_file, 'a', newline='', encoding='utf-8') as f:
 		writer = csv.writer(f)
-
 		if not file_exists:
 			writer.writerow(['timestamp', 'user_id', 'username', 'prompt', 'generation_type', 'media_url', 'status'])
-
 		writer.writerow([timestamp, user_id, username, prompt, generation_type, media_url, status])
 
-
 def add_banned_user(user_id, username, prompt):
-	
 	banned_file = "db/dream_banned_users.csv"
-
 	file_exists = os.path.isfile(banned_file)
-	
 	os.makedirs(os.path.dirname(banned_file), exist_ok=True)
-	
 	timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-	
+
 	with open(banned_file, 'a', newline='', encoding='utf-8') as f:
 		writer = csv.writer(f)
-
 		if not file_exists:
 			writer.writerow(['timestamp', 'user_id', 'username', 'banned_prompt'])
-		
 		writer.writerow([timestamp, user_id, username, prompt])
 
-
 def is_user_banned(user_id):
-	
 	banned_file = "db/dream_banned_users.csv"
-	
 	if not os.path.isfile(banned_file):
 		return False
-	
 	with open(banned_file, 'r', newline='', encoding='utf-8') as f:
 		reader = csv.DictReader(f)
 		for row in reader:
 			if str(row['user_id']) == str(user_id):
 				return True
-	
 	return False
 
 async def handle_dream_command(user, args, message=None):
@@ -261,10 +243,8 @@ async def handle_dream_command(user, args, message=None):
 			username=user.name if hasattr(user, 'name') else str(user),
 			prompt=prompt,
 			generation_type=display_generation_type,
-			media_url=None  # URL not available yet
+			media_url=None
 		)
-		
-		initial_response = f"Creating {display_generation_type} for prompt: '{prompt}'... This might take a few minutes."
 		
 		# Create the generation request based on type
 		if is_image_to_video:
@@ -328,7 +308,7 @@ async def handle_dream_command(user, args, message=None):
 		# Poll until completion
 		completed = False
 		polling_count = 0
-		max_polling = 120  # Maximum poll attempts (10 minutes with 5 second intervals)
+		max_polling = 120
 		
 		while not completed and polling_count < max_polling:
 			if is_async_client:
@@ -362,7 +342,6 @@ async def handle_dream_command(user, args, message=None):
 				)
 				return error_embed(f"{display_generation_type.capitalize()} generation failed: {failure_reason}", title="❌ Generation Failed")
 			
-			# Wait before checking again (longer interval for videos)
 			polling_interval = 5 if (is_video or is_image_to_video) else 3
 			await asyncio.sleep(polling_interval)
 			polling_count += 1
@@ -409,14 +388,12 @@ async def handle_dream_command(user, args, message=None):
 		buffer = io.BytesIO(media_content)
 		buffer.seek(0)
 		
-		# Create a Discord file object
 		discord_file = discord.File(
 			fp=buffer,
 			filename=discord_filename,
 			description=f"Dream {display_generation_type} completed for '{prompt}'"
 		)
 		
-		# Record the successful generation for cooldown
 		if not is_admin:
 			if user_id not in user_cooldowns:
 				user_cooldowns[user_id] = {}

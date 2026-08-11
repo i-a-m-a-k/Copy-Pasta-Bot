@@ -4,10 +4,10 @@ from ui.embeds import warning_embed
 
 from .transforms import create_transform_handler
 from .puppets import handle_flirt, handle_roast
-from cmds import mock
-from cmds import deepfry
-from cmds import dream
-from cmds import regexc
+from . import mock
+from . import deepfry
+from . import dream
+from . import regexc
 
 def handle_mock(
 	user: discord.User,
