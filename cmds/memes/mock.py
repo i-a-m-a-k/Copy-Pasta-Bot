@@ -6,10 +6,32 @@ import discord
 from typing import Optional
 import constants
 
+# --- Precompiled Regex Patterns ---
+MENTION_REGEX = re.compile(r'<@!?(\d+)>')
+CUSTOM_EMOJI_REGEX = re.compile(r'<a?:[a-zA-Z0-9_]+:\d+>')
+
+# --- In-Memory Asset Caches ---
+_BASE_IMAGE_CACHE: Optional[Image.Image] = None
+_FONT_CACHE: Optional[ImageFont.FreeTypeFont] = None
+
 def get_asset_path(filename: str) -> str:
     return os.path.join(constants.ASSETS_DIR, filename)
 
-def process_text(message: discord.Message, content: str) -> list:
+def get_base_mock_image() -> Image.Image:
+    """Returns a fast in-memory copy of the pre-loaded mock.jpg base template."""
+    global _BASE_IMAGE_CACHE
+    if _BASE_IMAGE_CACHE is None:
+        _BASE_IMAGE_CACHE = Image.open(get_asset_path('mock.jpg')).convert('RGB')
+    return _BASE_IMAGE_CACHE.copy()
+
+def get_mock_font() -> ImageFont.FreeTypeFont:
+    """Returns the cached TrueType font object, avoiding disk parsing on each request."""
+    global _FONT_CACHE
+    if _FONT_CACHE is None:
+        _FONT_CACHE = ImageFont.truetype(get_asset_path('Impacted.ttf'), 36)
+    return _FONT_CACHE
+
+def process_text(message: discord.Message, content: str) -> list[tuple[str, bool]]:
     # Create a mapping of user IDs to display names
     user_mentions = {
         str(user.id): user.display_name
@@ -19,8 +41,8 @@ def process_text(message: discord.Message, content: str) -> list:
     segments = []
     current_pos = 0
     
-    # Find all user mentions in the text
-    for match in re.finditer(r'<@!?(\d+)>', content):
+    # Find all user mentions in the text using precompiled regex
+    for match in MENTION_REGEX.finditer(content):
         user_id = match.group(1)
         
         # Add text before the mention
@@ -44,22 +66,18 @@ def process_text(message: discord.Message, content: str) -> list:
     for text, should_mock in segments:
         if text:
             if should_mock:
-                # Strip Discord emojis from mockable text
-                text = re.sub(r'<a?:[a-zA-Z0-9_]+:\d+>', '', text)
-                # Strip Unicode emojis
+                text = CUSTOM_EMOJI_REGEX.sub('', text)
                 text = text.encode('ascii', 'ignore').decode()
-            if text.strip():  # Only add non-empty segments
+            if text.strip():
                 processed_segments.append((text, should_mock))
     
     return processed_segments
 
 def convert_to_mock_case(text: str) -> str:
-    # Remove markdown formatting (##, **, __, etc.)
     clean_text = discord.utils.remove_markdown(text)
-    # Convert to mocking case
     return ''.join(c.upper() if i % 2 else c.lower() for i, c in enumerate(clean_text))
 
-def fit_text_to_width(draw, text: str, font: ImageFont.FreeTypeFont, max_width: int) -> str:
+def fit_text_to_width(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.FreeTypeFont, max_width: int) -> str:
     if draw.textlength(text, font=font) <= max_width:
         return text
 
@@ -74,48 +92,35 @@ def fit_text_to_width(draw, text: str, font: ImageFont.FreeTypeFont, max_width: 
     
     return text[:left] + "..."
 
-def create_mock_image(segments: list) -> io.BytesIO:
-    # Process each segment according to whether it should be mocked
-    processed_text = ''
-    for text, should_mock in segments:
-        if should_mock:
-            processed_text += convert_to_mock_case(text)
-        else:
-            processed_text += text
+def create_mock_image(segments: list[tuple[str, bool]]) -> io.BytesIO:
+    processed_text = ''.join(
+        convert_to_mock_case(text) if should_mock else text
+        for text, should_mock in segments
+    )
     
-    # Open the base image
-    base_image = Image.open(get_asset_path('mock.jpg'))
-    
-    # Create a drawing object
+    # Clone pre-cached in-memory base image and retrieve cached TrueType font
+    base_image = get_base_mock_image()
+    font = get_mock_font()
     draw = ImageDraw.Draw(base_image)
     
-    # Load the font
-    font = ImageFont.truetype(get_asset_path('Impacted.ttf'), 36)
-    
-    # Get image dimensions
     img_w, img_h = base_image.size
-    
-    # Calculate maximum width for text (90% of image width)
     max_text_width = int(img_w * 0.9)
     
-    # Fit text to width
+    # Fit text to width using binary search
     fitted_text = fit_text_to_width(draw, processed_text, font, max_text_width)
     
-    # Get text dimensions
+    # Measure text dimensions
     text_bbox = draw.textbbox((0, 0), fitted_text, font=font)
     text_w = text_bbox[2] - text_bbox[0]
     text_h = text_bbox[3] - text_bbox[1]
     
-    # Calculate text position (centered)
     x = (img_w - text_w) // 2
-    y = img_h - text_h - 20  # 20 pixels from bottom
+    y = img_h - text_h - 20
     
-    # Add text to image
     draw.text((x, y), fitted_text, font=font, fill='white')
     
-    # Save the image to an in-memory buffer
     buffer = io.BytesIO()
-    base_image.save(buffer, format='JPEG')
+    base_image.save(buffer, format='JPEG', quality=90)
     buffer.seek(0)
     return buffer
 
@@ -124,7 +129,6 @@ def handle_mock_command(reply: discord.MessageReference) -> Optional[discord.Fil
         return None
     
     segments = process_text(reply.resolved, reply.resolved.content)
-    
     if not segments:
         return None
         
