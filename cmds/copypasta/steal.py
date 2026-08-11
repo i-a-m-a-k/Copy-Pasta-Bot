@@ -38,8 +38,7 @@ def handle_steal(
 	if target_key_name in invoking_user_db:
 		return warning_embed(f"You already have a key named `{target_key_name}`. Specify a new key name: `;;steal @user {old_key} <new_key>`")
 
-	invoking_user_db[target_key_name] = value
-	db_manager.db[key_user] = invoking_user_db
+	db_manager.store_text(user.id, target_key_name, value, overwrite=False)
 
 	dest = f"`{new_key}`" if new_key else f"`{old_key}`"
 	return success_embed(f"Successfully stole key `{old_key}` from <@{steal_from_id}> as {dest}!")

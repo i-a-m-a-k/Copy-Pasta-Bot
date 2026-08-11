@@ -73,8 +73,7 @@ def handle_grandom(
 	search_term = args[1] if len(args) == 2 else None
 	all_values = []
 
-	for user_id in db_manager.db.keys():
-		user_db = db_manager.db.get(user_id, {})
+	for user_id, user_db in db_manager.get_all_users().items():
 		for key, value in user_db.items():
 			if search_term is None or search_term in key:
 				all_values.append(value)
@@ -125,8 +124,7 @@ def handle_gsearch(
 	search_key = args[1]
 	sections = []
 
-	for user_id in db_manager.db.keys():
-		user_db = db_manager.db.get(user_id, {})
+	for user_id, user_db in db_manager.get_all_users().items():
 		matching_keys = sorted([key for key in user_db.keys() if search_key in key])
 		if matching_keys:
 			keys_list = '\n'.join([f'- `{k}`' for k in matching_keys])

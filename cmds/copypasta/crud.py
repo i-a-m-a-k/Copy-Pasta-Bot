@@ -74,10 +74,7 @@ def handle_delete_me(
 	reply: Optional[discord.MessageReference] = None
 ) -> discord.Embed:
 	"""Mass deletes all keys saved by the user."""
-	user_id, user_db = db_manager._get_user_entry(user.id)
-	if user_db:
-		user_db.clear()
-		db_manager.db[user_id] = user_db
+	if db_manager.clear_user_keys(user.id):
 		return success_embed("All your saved keys have been deleted.")
 	return info_embed("You don't have any saved keys to delete.")
 
@@ -93,17 +90,18 @@ def handle_rename(
 		return error_embed(f"Usage: `;;{cmd_name} <original_key> <new_key>`")
 
 	old_key, new_key = args[1], args[2]
-	key_user, user_db = db_manager._get_user_entry(user.id)
-	if not user_db:
-		return info_embed("You have not saved any keys yet.")
-	if old_key not in user_db:
-		return error_embed(f"Key `{old_key}` does not exist.")
-	if new_key in user_db and not overwrite:
-		return warning_embed(f"Key `{new_key}` already exists. Use `;;rename_o` to overwrite.")
-
-	user_db[new_key] = user_db.pop(old_key)
-	db_manager.db[key_user] = user_db
-	return success_embed(f"Renamed key `{old_key}` to `{new_key}`.")
+	status = db_manager.rename_key(user.id, old_key, new_key, overwrite)
+	match status:
+		case 0:
+			return success_embed(f"Renamed key `{old_key}` to `{new_key}`.")
+		case -1:
+			return info_embed("You have not saved any keys yet.")
+		case -2:
+			return error_embed(f"Key `{old_key}` does not exist.")
+		case -3:
+			return warning_embed(f"Key `{new_key}` already exists. Use `;;rename_o` to overwrite.")
+		case _:
+			return error_embed("Something went wrong while renaming the key.")
 
 def handle_delkey(
 	db_manager: DatabaseManager,
