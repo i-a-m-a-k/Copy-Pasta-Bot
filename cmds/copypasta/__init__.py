@@ -14,6 +14,8 @@ from .retrieval import (
     handle_gsearch,
 )
 from .steal import handle_steal
+from .transfer import handle_export, handle_import
+from .vibematch import handle_vibematch
 
 __all__ = [
     'handle_add',
@@ -28,4 +30,7 @@ __all__ = [
     'handle_search',
     'handle_gsearch',
     'handle_steal',
+    'handle_export',
+    'handle_import',
+    'handle_vibematch',
 ]

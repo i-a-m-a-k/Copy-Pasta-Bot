@@ -1,5 +1,6 @@
 import io
 import asyncio
+from typing import Optional, Union, Callable
 import aiohttp
 try:
 	from lumaai import AsyncLumaAI
@@ -8,6 +9,7 @@ except ImportError:
 from lumaai import LumaAI
 
 import discord
+import constants
 import do_not_push
 import time
 import argparse
@@ -15,21 +17,42 @@ import shlex
 import os
 import csv
 from datetime import datetime
-from ui_utils import (
+from ui import (
 	error_embed,
 	warning_embed,
-	info_embed,
-	success_embed,
 	get_http_session,
 	extract_image_url
 )
 
-# Dictionary to track user cooldowns
-user_cooldowns = {}
+# Content moderation configuration
+MODERATION_THRESHOLDS = {
+	"sexual/minors": 0.20,
+	"self-harm": 0.50,
+	"self-harm/intent": 0.50,
+	"self-harm/instructions": 0.50,
+	"hate/threatening": 0.50,
+	"harassment/threatening": 0.50,
+	"violence/graphic": 0.70,
+	"hate": 0.80,
+	"sexual": 0.85,
+	"harassment": 0.90,
+	"violence": 0.90,
+	"illicit/violent": 0.70,
+	"illicit": 0.85,
+}
+
+# Severe zero-tolerance categories that trigger an immediate command ban
+SEVERE_BAN_CATEGORIES = {
+	"sexual/minors",
+	"self-harm",
+	"self-harm/intent",
+	"self-harm/instructions",
+}
+
 pending_logs = {}
 
 def log_dream_command(user_id, username, prompt, generation_type, media_url=None, status="success"):
-	log_file = "db/dream_logs.csv"
+	log_file = constants.DREAM_LOGS_FILE
 	timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 	if not media_url:
@@ -48,28 +71,97 @@ def log_dream_command(user_id, username, prompt, generation_type, media_url=None
 			writer.writerow(['timestamp', 'user_id', 'username', 'prompt', 'generation_type', 'media_url', 'status'])
 		writer.writerow([timestamp, user_id, username, prompt, generation_type, media_url, status])
 
-def add_banned_user(user_id, username, prompt):
-	banned_file = "db/dream_banned_users.csv"
-	file_exists = os.path.isfile(banned_file)
+def add_banned_user(user_id: Union[int, str], username: str, prompt: str) -> None:
+	banned_file = constants.DREAM_BANNED_FILE
 	os.makedirs(os.path.dirname(banned_file), exist_ok=True)
+	file_exists = os.path.isfile(banned_file)
 	timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 	with open(banned_file, 'a', newline='', encoding='utf-8') as f:
 		writer = csv.writer(f)
-		if not file_exists:
+		if not file_exists or os.path.getsize(banned_file) == 0:
 			writer.writerow(['timestamp', 'user_id', 'username', 'banned_prompt'])
-		writer.writerow([timestamp, user_id, username, prompt])
+		writer.writerow([timestamp, str(user_id), username, prompt])
 
-def is_user_banned(user_id):
-	banned_file = "db/dream_banned_users.csv"
+def is_user_banned(user_id: Union[int, str]) -> bool:
+	banned_file = constants.DREAM_BANNED_FILE
 	if not os.path.isfile(banned_file):
 		return False
-	with open(banned_file, 'r', newline='', encoding='utf-8') as f:
-		reader = csv.DictReader(f)
-		for row in reader:
-			if str(row['user_id']) == str(user_id):
-				return True
+	try:
+		with open(banned_file, 'r', newline='', encoding='utf-8') as f:
+			reader = csv.DictReader(f)
+			for row in reader:
+				if row.get('user_id') and str(row['user_id']).strip() == str(user_id).strip():
+					return True
+	except Exception as e:
+		print(f"Error checking dream ban: {e}")
 	return False
+
+def remove_banned_user(user_id: Union[int, str]) -> list[dict]:
+	banned_file = constants.DREAM_BANNED_FILE
+	unbanned_file = constants.DREAM_UNBANNED_FILE
+	if not os.path.isfile(banned_file):
+		return []
+
+	remaining_rows = []
+	removed_rows = []
+
+	try:
+		with open(banned_file, 'r', newline='', encoding='utf-8') as f:
+			reader = csv.DictReader(f)
+			fieldnames = reader.fieldnames or ['timestamp', 'user_id', 'username', 'banned_prompt']
+			for row in reader:
+				if str(row.get('user_id', '')).strip() == str(user_id).strip():
+					removed_rows.append(row)
+				else:
+					remaining_rows.append(row)
+	except Exception as e:
+		print(f"Error reading dream banned file: {e}")
+		return []
+
+	if not removed_rows:
+		return []
+
+	try:
+		with open(banned_file, 'w', newline='', encoding='utf-8') as f:
+			writer = csv.DictWriter(f, fieldnames=fieldnames)
+			writer.writeheader()
+			writer.writerows(remaining_rows)
+	except Exception as e:
+		print(f"Error updating dream banned file: {e}")
+		return []
+
+	try:
+		os.makedirs(os.path.dirname(unbanned_file), exist_ok=True)
+		unbanned_exists = os.path.isfile(unbanned_file) and os.path.getsize(unbanned_file) > 0
+		with open(unbanned_file, 'a', newline='', encoding='utf-8') as f:
+			writer = csv.writer(f)
+			if not unbanned_exists:
+				writer.writerow(['timestamp', 'user_id', 'username', 'banned_prompt'])
+			for row in removed_rows:
+				writer.writerow([
+					row.get('timestamp', ''),
+					row.get('user_id', ''),
+					row.get('username', ''),
+					row.get('banned_prompt', '')
+				])
+	except Exception as e:
+		print(f"Error writing to dream unbanned file: {e}")
+
+	return removed_rows
+
+def get_banned_users() -> list[dict]:
+	banned_file = constants.DREAM_BANNED_FILE
+	if not os.path.isfile(banned_file):
+		return []
+	try:
+		with open(banned_file, 'r', newline='', encoding='utf-8') as f:
+			reader = csv.DictReader(f)
+			return [row for row in reader if row.get('user_id')]
+	except Exception as e:
+		print(f"Error reading dream ban list: {e}")
+		return []
+
 
 async def handle_dream_command(user, args, message=None):
 	try:
@@ -137,26 +229,6 @@ async def handle_dream_command(user, args, message=None):
 			prompt = prompt.strip()
 		
 		# Determine current generation type - combine video and image-to-video into "video"
-		current_generation_type = "video" if (is_video or is_image_to_video) else "image"
-		current_time = time.time()
-
-		if not is_admin:
-			cooldown_period = 60
-			
-			if user_id in user_cooldowns and current_generation_type in user_cooldowns[user_id]:
-				last_used = user_cooldowns[user_id][current_generation_type]
-				time_elapsed = current_time - last_used
-				time_remaining = cooldown_period - time_elapsed
-				
-				if time_remaining > 0:
-					minutes = int(time_remaining // 60)
-					seconds = int(time_remaining % 60)
-					if minutes > 0:
-						time_str = f"{minutes} minute{'s' if minutes > 1 else ''} and {seconds} second{'s' if seconds != 1 else ''}"
-					else:
-						time_str = f"{seconds} second{'s' if seconds != 1 else ''}"
-					return warning_embed(f"You're on cooldown for {current_generation_type} generation for {time_str}. Please try again later.", title="⏳ Cooldown Active")
-		
 		requires_replied_image = is_image_to_video or has_iref or has_sref or has_cref or has_modify
 		
 		image_url = None
@@ -213,15 +285,30 @@ async def handle_dream_command(user, args, message=None):
 					) as mod_response:
 						if mod_response.status == 200:
 							mod_data = await mod_response.json()
-							if mod_data["results"][0]["flagged"]:
+							scores = mod_data.get("results", [{}])[0].get("category_scores", {})
+							flagged_categories = [
+								cat for cat, score in scores.items()
+								if score >= MODERATION_THRESHOLDS.get(cat, 0.85)
+							]
+
+							if flagged_categories:
+								is_severe = any(cat in SEVERE_BAN_CATEGORIES for cat in flagged_categories)
 								if not is_admin:
-									await asyncio.to_thread(
-										add_banned_user,
-										user_id=user.id,
-										username=user.name if hasattr(user, 'name') else str(user),
-										prompt=prompt
+									if is_severe:
+										await asyncio.to_thread(
+											add_banned_user,
+											user_id=user.id,
+											username=user.name if hasattr(user, 'name') else str(user),
+											prompt=prompt
+										)
+										return error_embed(
+											"Your prompt was flagged for a severe safety violation. You have been banned from using the dream command.",
+											title="🚫 Moderation Violation"
+										)
+									return error_embed(
+										"Your prompt was flagged by our safety filter for inappropriate content. Generation cancelled.",
+										title="⚠️ Prompt Flagged"
 									)
-									return error_embed("Your prompt was flagged by our safety system for inappropriate content. You have been banned from using the dream command.", title="🚫 Moderation Violation")
 								return warning_embed("Your prompt was flagged by the safety system for inappropriate content.", title="⚠️ Safety Warning")
 				except Exception as e:
 					print(f"Moderation API error: {e}")
@@ -394,11 +481,6 @@ async def handle_dream_command(user, args, message=None):
 			description=f"Dream {display_generation_type} completed for '{prompt}'"
 		)
 		
-		if not is_admin:
-			if user_id not in user_cooldowns:
-				user_cooldowns[user_id] = {}
-			user_cooldowns[user_id][current_generation_type] = time.time()
-			
 		return discord_file
 		
 	except Exception as e:
@@ -413,3 +495,33 @@ async def handle_dream_command(user, args, message=None):
 			status=f"error: {error_message}"
 		)
 		return error_embed(f"Error generating content: {error_message}", title="❌ Generation Error")
+
+async def handle_dream(
+	user: discord.User,
+	args: list[str],
+	reply: Optional[discord.MessageReference] = None,
+	message: Optional[discord.Message] = None,
+	get_client: Optional[Callable[[], Optional[discord.Client]]] = None
+) -> Union[str, discord.File, discord.Embed, dict, None]:
+	"""Handles the ;;dream Luma AI generation command and admin moderation flags (--ban, --unban, --banlist)."""
+	cmd_args = args[1:] if args and args[0].lower() == "dream" else args
+	if cmd_args:
+		first_arg = cmd_args[0].lower()
+		if first_arg in ("--ban", "-ban", "--unban", "-unban", "--banlist", "-banlist"):
+			from core.config import is_admin as is_bot_admin
+			if not is_bot_admin(user.id):
+				return error_embed("You don't have permission to use this command.")
+
+			from cmds.admin.dream_ban import handle_dream_ban, handle_dream_unban, handle_dream_banlist
+			if first_arg in ("--ban", "-ban"):
+				return await handle_dream_ban(user, [first_arg] + cmd_args[1:], reply=reply, message=message, get_client=get_client)
+			elif first_arg in ("--unban", "-unban"):
+				return await handle_dream_unban(user, [first_arg] + cmd_args[1:], reply=reply, message=message)
+			elif first_arg in ("--banlist", "-banlist"):
+				return await handle_dream_banlist(user, [first_arg] + cmd_args[1:], reply=reply, message=message)
+
+	target_ref = reply or message
+	return await handle_dream_command(user, args, message=target_ref)
+
+
+

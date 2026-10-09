@@ -35,6 +35,7 @@ def handle_help(args: list[str]) -> discord.Embed:
 					"• **`add_o <key> <message>`** : Save text and overwrite if exists\n"
 					"• **`saved`** : Interactive paginated list of your saved keys\n"
 					"• **`delete <key>`** : Delete a key\n"
+					"• **`delkey`** : Delete key by replying to bot message\n"
 					"• **`delete_me`** : Delete all your saved keys\n"
 					"• **`rename <old> <new>`** : Rename a key\n"
 					"• **`rename_o <old> <new>`** : Rename a key (overwrite)"
@@ -45,8 +46,17 @@ def handle_help(args: list[str]) -> discord.Embed:
 				name="Finding & Stealing Keys",
 				value=(
 					"• **`steal <@user> <key> [new]`** : Steal a key from another user\n"
+					"• **`vibematch <@user> [@user2]`** : Check meme compatibility percentage between users\n"
 					"• **`random [term]`** : Send a random saved key (optional search filter)\n"
 					"• **`search <term>`** : Search through your saved keys"
+				),
+				inline=False
+			)
+			embed.add_field(
+				name="Backup & Transfer",
+				value=(
+					"• **`export`** : Export saved keys as JSON to your Direct Messages (DMs)\n"
+					"• **`import`** : Import keys from JSON file (DM only, with overwrite warning)"
 				),
 				inline=False
 			)
@@ -76,10 +86,36 @@ def handle_help(args: list[str]) -> discord.Embed:
 			embed.add_field(
 				name="Interactive & Media",
 				value=(
+					"• **`cat [-t tag] [-g] [text]`** : Cat image or GIF from Cataas (Reply / Text)\n"
+					"• **`dadjoke [term]`** : Fetch a dad joke from icanhazdadjoke (Random / Search)\n"
+					"• **`lmgtfy [query]`** : Generate a Google search link (Reply / Text)\n"
+					"• **`thonkify <text>`** : Thinking emoji (🤔) font banner (Reply / Text)\n"
 					"• **`deepfry`** : Deep fry image with eye flares (Reply / Attach)\n"
 					"• **`roast <@user>`** : Roast a tagged user\n"
 					"• **`flirt <@user>`** : Flirt with a tagged user\n"
 					"• **`dream <prompt>`** : AI image & video generation (`-v`, `-i2v`)"
+				),
+				inline=False
+			)
+			return embed
+
+		case 'admin':
+			embed = discord.Embed(
+				title="Admin Commands",
+				description="Bot administration and moderation commands (Bot Admins only).",
+				color=discord.Color.dark_red()
+			)
+			embed.add_field(
+				name="Bot Moderation & Controls",
+				value=(
+					"• **`dream --ban <@user|id> [reason]`** : Ban user from `;;dream` (or reply)\n"
+					"• **`dream --unban <@user|id>`** : Unban user from `;;dream` (or reply)\n"
+					"• **`dream --banlist`** : View ephemeral dream banlist\n"
+					"• **`blacklist_add <@user>`** : Blacklist user from the entire bot\n"
+					"• **`blacklist_remove <@user>`** : Remove user from bot blacklist\n"
+					"• **`disable <command>`** : Disable command in current server\n"
+					"• **`enable <command>`** : Enable disabled command in server\n"
+					"• **`ping`** : View bot latency and system status"
 				),
 				inline=False
 			)

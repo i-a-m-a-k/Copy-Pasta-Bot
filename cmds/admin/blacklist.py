@@ -27,7 +27,7 @@ def handle_blacklist_add(
 	if user_id_to_blacklist in constants.BLACKLIST:
 		return warning_embed("User is already blacklisted.")
 
-	constants.BLACKLIST.append(user_id_to_blacklist)
+	constants.BLACKLIST.add(user_id_to_blacklist)
 	save_blacklist()
 	return discord.Embed(
 		description=f"🚫 User <@{user_id_to_blacklist}> has been blacklisted.",
@@ -53,6 +53,6 @@ def handle_blacklist_remove(
 	if user_id_to_remove not in constants.BLACKLIST:
 		return info_embed("User is not currently blacklisted.")
 
-	constants.BLACKLIST.remove(user_id_to_remove)
+	constants.BLACKLIST.discard(user_id_to_remove)
 	save_blacklist()
 	return success_embed(f"User <@{user_id_to_remove}> has been removed from the blacklist.")

@@ -1,4 +1,4 @@
-from typing import Optional, Union
+from typing import Optional
 import discord
 import constants
 from core.config import extract_user_id
@@ -35,10 +35,21 @@ def handle_steal(
 	key_user, invoking_user_db = db_manager._get_user_entry(user.id)
 	target_key_name = new_key if new_key else old_key
 
+	if len(target_key_name) > constants.MAX_KEY_LENGTH:
+		return error_embed(f"Key name cannot exceed {constants.MAX_KEY_LENGTH} characters (provided length: {len(target_key_name)}).")
+
+	if len(value) > constants.MAX_VALUE_LENGTH:
+		return error_embed(f"Cannot steal key `{old_key}` because its value exceeds Discord's limit of {constants.MAX_VALUE_LENGTH} characters.")
+
 	if target_key_name in invoking_user_db:
 		return warning_embed(f"You already have a key named `{target_key_name}`. Specify a new key name: `;;steal @user {old_key} <new_key>`")
 
-	db_manager.store_text(user.id, target_key_name, value, overwrite=False)
+	if len(invoking_user_db) >= constants.MAX_KEYS_PER_USER:
+		return error_embed(constants.KEY_LIMIT_REACHED, title="❌ Key Limit Exceeded")
+
+	status = db_manager.store_text(user.id, target_key_name, value, overwrite=False)
+	if status != constants.SUCCESSFUL:
+		return error_embed(status)
 
 	dest = f"`{new_key}`" if new_key else f"`{old_key}`"
 	return success_embed(f"Successfully stole key `{old_key}` from <@{steal_from_id}> as {dest}!")

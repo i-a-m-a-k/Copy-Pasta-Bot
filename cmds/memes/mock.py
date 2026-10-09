@@ -1,10 +1,12 @@
+import asyncio
 import io
 import os
 import re
 from PIL import Image, ImageDraw, ImageFont
 import discord
-from typing import Optional
+from typing import Optional, Union
 import constants
+from ui import warning_embed
 
 # --- Precompiled Regex Patterns ---
 MENTION_REGEX = re.compile(r'<@!?(\d+)>')
@@ -124,7 +126,7 @@ def create_mock_image(segments: list[tuple[str, bool]]) -> io.BytesIO:
     buffer.seek(0)
     return buffer
 
-def handle_mock_command(reply: discord.MessageReference) -> Optional[discord.File]:
+async def handle_mock_command(reply: discord.MessageReference) -> Optional[discord.File]:
     if reply is None or reply.resolved is None:
         return None
     
@@ -132,5 +134,20 @@ def handle_mock_command(reply: discord.MessageReference) -> Optional[discord.Fil
     if not segments:
         return None
         
-    buffer = create_mock_image(segments)
+    buffer = await asyncio.to_thread(create_mock_image, segments)
     return discord.File(buffer, filename='mock.jpg')
+
+async def handle_mock(
+    user: discord.User,
+    args: list[str],
+    reply: Optional[discord.MessageReference] = None,
+    message: Optional[discord.Message] = None
+) -> Union[discord.Embed, discord.File]:
+    """Handles the ;;mock SpongeBob text overlay command."""
+    if reply is None or reply.resolved is None:
+        return warning_embed("You need to reply to a message to use this command.")
+    result = await handle_mock_command(reply)
+    if result is None:
+        return warning_embed("The message you replied to contains no text to mock.", title="⚠️ No Text Found")
+    return result
+

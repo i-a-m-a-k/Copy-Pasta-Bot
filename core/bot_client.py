@@ -33,13 +33,17 @@ class DiscordBot:
 		intents.message_content = True
 		self.client = discord.Client(intents=intents)
 		self.db_manager = DatabaseManager(constants.DB_NAME)
-		self.command_handler = CommandHandler(self.db_manager, self._get_user)
+		self.command_handler = CommandHandler(
+			self.db_manager,
+			self._get_user,
+			get_client=lambda: self.client
+		)
 		self.webhook_cache: dict[int, discord.Webhook] = {}
 
 		print("Loading blacklist...")
 		loaded_list = load_blacklist()
 		constants.BLACKLIST.clear()
-		constants.BLACKLIST.extend(loaded_list)
+		constants.BLACKLIST.update(loaded_list)
 		print(f"Loaded {len(constants.BLACKLIST)} user(s) from blacklist.")
 
 		print("Loading disabled commands...")
@@ -80,6 +84,9 @@ class DiscordBot:
 			if message.author == self.client.user or message.author.bot:
 				return
 
+			if ';;' not in message.content:
+				return
+
 			if is_blacklisted(message.author.id):
 				if message.content.strip().startswith(';;'):
 					await message.reply(
@@ -96,8 +103,8 @@ class DiscordBot:
 		if content == ';;delmsg':
 			await handle_delmsg(self.client, message)
 		elif re.search(constants.REPLACE, content):
-			await handle_replacement(self.db_manager, message)
-		elif re.match(constants.COMMAND, content):
+			await handle_replacement(self.db_manager, message, self.command_handler.cooldown_manager)
+		elif content.startswith(';;') and len(content) > 2 and not content[2].isspace():
 			response = await self.command_handler.handle_command(
 				message.author,
 				content,

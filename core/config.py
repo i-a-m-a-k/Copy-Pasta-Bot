@@ -39,23 +39,24 @@ def is_blacklisted(user_id: Union[int, str]) -> bool:
 	except (ValueError, TypeError):
 		return False
 
-def load_blacklist() -> list:
-	"""Loads the blacklist from the JSON file."""
+def load_blacklist() -> set[int]:
+	"""Loads the blacklist from the JSON file as a set of integer user IDs."""
 	if os.path.exists(BLACKLIST_FILE):
 		try:
 			with open(BLACKLIST_FILE, 'r') as f:
-				return json.load(f)
-		except (json.JSONDecodeError, FileNotFoundError):
-			print("Could not read blacklist.json, starting with empty list.", file=sys.stderr)
-			return []
-	return []
+				data = json.load(f)
+				return {int(x) for x in data}
+		except (json.JSONDecodeError, FileNotFoundError, ValueError):
+			print("Could not read blacklist.json, starting with empty set.", file=sys.stderr)
+			return set()
+	return set()
 
 def save_blacklist():
-	"""Saves the current blacklist to the JSON file."""
+	"""Saves the current blacklist set to the JSON file as a sorted list."""
 	try:
 		os.makedirs(os.path.dirname(BLACKLIST_FILE), exist_ok=True)
 		with open(BLACKLIST_FILE, 'w') as f:
-			json.dump(constants.BLACKLIST, f, indent=4)
+			json.dump(sorted(list(constants.BLACKLIST)), f, indent=4)
 	except IOError as e:
 		print(f"Error saving blacklist: {e}", file=sys.stderr)
 

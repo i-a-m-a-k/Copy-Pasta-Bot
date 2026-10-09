@@ -1,5 +1,6 @@
 import io
 import asyncio
+import discord
 from discord import File, Embed
 from PIL import Image
 import numpy as np
@@ -9,7 +10,7 @@ from typing import Optional, Union
 
 import mediapipe as mp
 import constants
-from ui_utils import error_embed, warning_embed, extract_image_url, fetch_image_bytes
+from ui import error_embed, warning_embed, extract_image_url, fetch_image_bytes
 
 # Lens flare asset path
 LENS_FLARE_PATH = os.path.join(constants.ASSETS_DIR, 'lens_flare.png')
@@ -256,3 +257,15 @@ async def handle_deepfry_command(reply, message=None) -> Union[File, Embed]:
 
     except Exception as e:
         return error_embed(f"Error deep frying image: {str(e)}", title="❌ Deepfry Error")
+
+async def handle_deepfry(
+    user: discord.User,
+    args: list[str],
+    reply: Optional[discord.MessageReference] = None,
+    message: Optional[discord.Message] = None
+) -> Union[Embed, File]:
+    """Handles the ;;deepfry command with ML iris eye flares."""
+    if reply is None and (message is None or not getattr(message, 'attachments', None)):
+        return warning_embed("You need to reply to a message with an image or attach one to use this command.")
+    return await handle_deepfry_command(reply, message)
+
