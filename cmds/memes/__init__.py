@@ -7,6 +7,7 @@ from .thonkify import handle_thonkify_command
 from .dadjoke import handle_dadjoke
 from .cat import handle_cat
 from .lmgtfy import handle_lmgtfy
+from .translate import handle_translate
 from . import regexc
 
 __all__ = [
@@ -20,5 +21,6 @@ __all__ = [
 	'handle_dadjoke',
 	'handle_cat',
 	'handle_lmgtfy',
+	'handle_translate',
 	'regexc',
 ]
