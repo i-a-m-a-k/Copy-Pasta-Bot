@@ -266,6 +266,24 @@ async def handle_replacement(
 	elif replaced_text:
 		await target.reply(replaced_text)
 
+async def _safe_reply(target: discord.Message, **kwargs) -> Optional[discord.Message]:
+	"""
+	Reply to a message, falling back to channel.send() if the target
+	message was deleted between command invocation and response.
+	Returns the sent Message, or None on total failure.
+	"""
+	try:
+		return await target.reply(**kwargs)
+	except discord.HTTPException as e:
+		if e.code == 50035:  # Invalid Form Body: Unknown message reference
+			try:
+				return await target.channel.send(**kwargs)
+			except (discord.Forbidden, discord.HTTPException):
+				return None
+		raise
+	except discord.Forbidden:
+		return None
+
 async def send_response(
 	client: discord.Client,
 	webhook_cache: dict[int, discord.Webhook],
@@ -342,8 +360,9 @@ async def send_response(
 				kwargs["content"] = response["content"]
 			if "delete_after" in response:
 				kwargs["delete_after"] = response["delete_after"]
-			resp = await message.reply(**kwargs)
-			view.message = resp
+			resp = await _safe_reply(message, **kwargs)
+			if resp and view:
+				view.message = resp
 			return
 		elif "file" in response or "files" in response or "embed" in response or "content" in response:
 			kwargs = {}
@@ -357,12 +376,12 @@ async def send_response(
 				kwargs["files"] = response["files"]
 			if "delete_after" in response:
 				kwargs["delete_after"] = response["delete_after"]
-			await message.reply(**kwargs)
+			await _safe_reply(message, **kwargs)
 			return
 	elif isinstance(response, discord.File):
 		# Fallback error images (e.g. thonk_yourself.png) reply directly to the command invoker
 		target = message if getattr(response, 'filename', '') == 'thonk_yourself.png' else reply_to
-		await target.reply(file=response)
+		await _safe_reply(target, file=response)
 		if hasattr(response.fp, 'name') and isinstance(response.fp.name, str) and os.path.exists(response.fp.name):
 			try:
 				os.remove(response.fp.name)
@@ -373,16 +392,17 @@ async def send_response(
 		# Only transient error/warning notifications auto-delete.
 		persistent_embed_cmds = {'vibematch', 'help'}
 		if command_name in persistent_embed_cmds:
-			await message.reply(embed=response)
+			await _safe_reply(message, embed=response)
 		else:
-			await message.reply(embed=response, delete_after=constants.AUTO_DELETE_DELAY)
+			await _safe_reply(message, embed=response, delete_after=constants.AUTO_DELETE_DELAY)
 	elif isinstance(response, str):
 		if len(response) > 2000:
-			await message.reply(
+			await _safe_reply(
+				message,
 				embed=error_embed("Message exceeds Discord's 2,000-character limit."),
 				delete_after=constants.AUTO_DELETE_DELAY
 			)
 		else:
-			await reply_to.reply(response)
+			await _safe_reply(reply_to, content=response)
 	else:
 		print("Unhandled response type:", type(response))
