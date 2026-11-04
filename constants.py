@@ -37,6 +37,11 @@ DREAM_COOLDOWN = 150.0        # 60 seconds (1 minute) for dream generation
 
 AUTO_DELETE_DELAY = 60  # Auto-delete embeds/status responses after 60 seconds (1 minute)
 
+# Command Chaining
+MAX_CHAIN_DEPTH = 4
+CHAIN_TEXT_COMMANDS = {'tr', 's', 'clap', 'zalgo', 'copypasta', 'owo', 'stretch', 'vaporwave', 'emojify'}
+CHAIN_FINAL_COMMANDS = {'mock', 'thonkify'}
+
 # Dream Moderation & Logs
 DREAM_BANNED_FILE   = 'db/dream_banned_users.csv'
 DREAM_UNBANNED_FILE = 'db/dream_manually_unbanned_users.csv'
