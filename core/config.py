@@ -80,6 +80,15 @@ def save_disabled_commands():
 	except IOError as e:
 		print(f"Error saving disabled commands: {e}", file=sys.stderr)
 
+# Reserved guild key for globally disabled commands (bot admins only)
+GLOBAL_GUILD_KEY = "0"
+
+def is_command_disabled_globally(command: str) -> bool:
+	"""Checks if a command is globally disabled across all guilds and DMs."""
+	return command in disabled_commands.get(GLOBAL_GUILD_KEY, [])
+
 def is_command_disabled(guild_id: int, command: str) -> bool:
-	"""Checks if a command is disabled for a specific guild."""
+	"""Checks if a command is disabled for a specific guild (includes global)."""
+	if is_command_disabled_globally(command):
+		return True
 	return command in disabled_commands.get(str(guild_id), [])

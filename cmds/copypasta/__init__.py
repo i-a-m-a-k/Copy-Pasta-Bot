@@ -12,6 +12,7 @@ from .retrieval import (
     handle_grandom,
     handle_search,
     handle_gsearch,
+    handle_revsearch,
 )
 from .steal import handle_steal
 from .transfer import handle_export, handle_import
@@ -29,6 +30,7 @@ __all__ = [
     'handle_grandom',
     'handle_search',
     'handle_gsearch',
+    'handle_revsearch',
     'handle_steal',
     'handle_export',
     'handle_import',

@@ -2,6 +2,9 @@ import constants
 import re
 import shlex
 import threading
+from typing import Union
+import discord
+from ui.embeds import error_embed, warning_embed, info_embed
 
 MAX_PATTERN_LENGTH = 200
 REGEX_TIMEOUT_SECONDS = 2
@@ -40,30 +43,33 @@ def _regex_sub_with_timeout(pattern, replacement, string, count, flags,
 
 	return result[0], None
 
-def handle_regex(args: list, reply):
+def handle_regex(args: list, reply) -> Union[str, discord.Embed]:
 	if reply is None:
-		return constants.REGEX_NO_REPLY
+		return warning_embed(constants.REGEX_NO_REPLY, title="⚠️ No Reply Target")
 
 	if not reply.resolved.content:
-		return constants.REGEX_EMPTY_MSG
+		return warning_embed(constants.REGEX_EMPTY_MSG, title="⚠️ Empty Message")
 
 	if len(args) < 3:
-		return constants.REGEX_USAGE
+		return info_embed(constants.REGEX_USAGE, title="📝 Regex Usage")
 
 	try:
 		raw = replace_curly_quotes(" ".join(args[1:]))
 		parts = shlex.split(raw)
 	except ValueError as e:
-		return f"Parsing error: `{e}`"
+		return error_embed(f"Parsing error: `{e}`", title="❌ Parse Error")
 
 	if len(parts) < 2:
-		return constants.REGEX_USAGE
+		return info_embed(constants.REGEX_USAGE, title="📝 Regex Usage")
 
 	pattern, replacement, *rest = parts
 	flags_str = rest[0] if rest else ""
 
 	if len(pattern) > MAX_PATTERN_LENGTH:
-		return f"Pattern too long (max {MAX_PATTERN_LENGTH} characters)."
+		return error_embed(
+			f"Pattern too long (max {MAX_PATTERN_LENGTH} characters).",
+			title="❌ Pattern Too Long"
+		)
 
 	flags = 0
 	count = 1
@@ -83,16 +89,16 @@ def handle_regex(args: list, reply):
 	try:
 		re.compile(pattern, flags)
 	except re.error as e:
-		return f"Invalid regex pattern: `{e}`"
+		return error_embed(f"Invalid regex pattern: `{e}`", title="❌ Invalid Pattern")
 
 	result, error_msg = _regex_sub_with_timeout(
 		pattern, replacement, string, count, flags
 	)
 
 	if error_msg:
-		return error_msg
+		return error_embed(error_msg, title="❌ Regex Error")
 
 	if result == string:
-		return constants.REGEX_NOT_FOUND
+		return info_embed(constants.REGEX_NOT_FOUND, title="🔍 No Match")
 
 	return result

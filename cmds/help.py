@@ -2,6 +2,7 @@ import discord
 
 def handle_help(args: list[str]) -> discord.Embed:
 	"""Generates categorized help embeds for CopyPastaBot commands."""
+
 	if len(args) != 2:
 		embed = discord.Embed(
 			title="CopyPastaBot Help",
@@ -93,7 +94,7 @@ def handle_help(args: list[str]) -> discord.Embed:
 					"• **`deepfry`** : Deep fry image with eye flares (Reply / Attach)\n"
 					"• **`roast <@user>`** : Roast a tagged user\n"
 					"• **`flirt <@user>`** : Flirt with a tagged user\n"
-					"• **`dream <prompt>`** : AI image & video generation (`-v`, `-i2v`)"
+					"• **`dream <prompt>`** : AI image & video generation (`-v`, `-i2v`, `-modify`, `-ar`, …)"
 				),
 				inline=False
 			)
@@ -113,8 +114,11 @@ def handle_help(args: list[str]) -> discord.Embed:
 					"• **`dream --banlist`** : View ephemeral dream banlist\n"
 					"• **`blacklist_add <@user>`** : Blacklist user from the entire bot\n"
 					"• **`blacklist_remove <@user>`** : Remove user from bot blacklist\n"
-					"• **`disable <command>`** : Disable command in current server\n"
-					"• **`enable <command>`** : Enable disabled command in server\n"
+					"• **`revsearch`** : Reverse-search any replied message against saved keys (Bot Admin)\n"
+					"• **`disable <cmd>`** : Disable command in current server (Mods+)\n"
+					"• **`enable <cmd>`** : Enable disabled command in server (Mods+)\n"
+					"• **`disable <cmd> -g`** : Globally disable command everywhere (Bot Admin)\n"
+					"• **`enable <cmd> -g`** : Globally enable command everywhere (Bot Admin)\n"
 					"• **`ping`** : View bot latency and system status"
 				),
 				inline=False

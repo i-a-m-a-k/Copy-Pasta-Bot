@@ -289,6 +289,10 @@ async def send_response(
 
 		original_username = author.display_name
 		sanitized_username = re.sub("discord", "dis cord", original_username, flags=re.IGNORECASE)
+		# Strip mention patterns to prevent @everyone/@here/user mention abuse
+		sanitized_username = re.sub(r'@everyone|@here|<@!?\d+>|<@&\d+>', '', sanitized_username)
+		# Strip characters Discord webhook API rejects or that enable spoofing
+		sanitized_username = re.sub(r'[@#:`]', '', sanitized_username)
 		if len(sanitized_username) > 80:
 			sanitized_username = sanitized_username[:80]
 		if not sanitized_username.strip():
@@ -332,6 +336,8 @@ async def send_response(
 				kwargs["embed"] = response["embed"]
 			if "file" in response:
 				kwargs["file"] = response["file"]
+			if "files" in response:
+				kwargs["files"] = response["files"]
 			if "content" in response:
 				kwargs["content"] = response["content"]
 			if "delete_after" in response:
@@ -339,7 +345,7 @@ async def send_response(
 			resp = await message.reply(**kwargs)
 			view.message = resp
 			return
-		elif "file" in response or "embed" in response or "content" in response:
+		elif "file" in response or "files" in response or "embed" in response or "content" in response:
 			kwargs = {}
 			if "content" in response:
 				kwargs["content"] = response["content"]
@@ -347,6 +353,8 @@ async def send_response(
 				kwargs["embed"] = response["embed"]
 			if "file" in response:
 				kwargs["file"] = response["file"]
+			if "files" in response:
+				kwargs["files"] = response["files"]
 			if "delete_after" in response:
 				kwargs["delete_after"] = response["delete_after"]
 			await message.reply(**kwargs)

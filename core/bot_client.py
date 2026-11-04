@@ -39,6 +39,7 @@ class DiscordBot:
 			get_client=lambda: self.client
 		)
 		self.webhook_cache: dict[int, discord.Webhook] = {}
+		self._status_task: asyncio.Task | None = None
 
 		print("Loading blacklist...")
 		loaded_list = load_blacklist()
@@ -68,16 +69,29 @@ class DiscordBot:
 					name=status,
 					state=status
 				))
+			except asyncio.CancelledError:
+				break
 			except Exception as e:
 				print(f"Error updating status: {e}", file=sys.stderr)
-			await asyncio.sleep(86400)
+				# Short backoff on failure to avoid tight error loops
+				await asyncio.sleep(60)
+				continue
+
+			# Normal refresh interval between status updates
+			try:
+				await asyncio.sleep(86400)
+			except asyncio.CancelledError:
+				break
 
 	def setup_events(self):
 		"""Registers Discord client event listeners."""
 		@self.client.event
 		async def on_ready():
 			print(f'Logged in as {self.client.user}')
-			asyncio.create_task(self.update_status())
+			# Cancel previous status task on reconnect to avoid duplicate loops
+			if self._status_task and not self._status_task.done():
+				self._status_task.cancel()
+			self._status_task = asyncio.create_task(self.update_status())
 
 		@self.client.event
 		async def on_message(message: discord.Message):

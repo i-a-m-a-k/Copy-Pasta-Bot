@@ -9,7 +9,7 @@ from ui.embeds import success_embed, error_embed, warning_embed, info_embed
 from ui.confirmation import ImportConfirmView
 
 MAX_IMPORT_FILE_SIZE = 1_048_576  # 1 MB
-MAX_IMPORT_KEYS = 1000
+MAX_IMPORT_KEYS = 2000
 MAX_KEY_LENGTH = constants.MAX_KEY_LENGTH
 MAX_VALUE_LENGTH = constants.MAX_VALUE_LENGTH
 

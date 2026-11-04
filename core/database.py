@@ -3,18 +3,117 @@ import discord
 from sqlitedict import SqliteDict
 import constants
 
+
+class RandomHistoryCache:
+	"""
+	Thread-safe LRU cache for random value history.
+	Tracks recently shown values per user with automatic 24-hour expiration.
+	"""
+	
+	def __init__(self, max_history: int = None, ttl_hours: int = None):
+		"""
+		Initialize the history cache.
+		
+		Args:
+			max_history: Maximum number of values to track per user (default from constants)
+			ttl_hours: Hours before auto-reset (default from constants)
+		"""
+		import time
+		from collections import OrderedDict
+		
+		self.max_history = max_history or constants.RANDOM_HISTORY_SIZE
+		self.ttl_seconds = (ttl_hours or constants.RANDOM_HISTORY_TTL_HOURS) * 3600
+		
+		# Structure: {user_id: OrderedDict{value: timestamp}}
+		self._history: dict[Union[int, str], OrderedDict] = {}
+		self._last_reset: dict[Union[int, str], float] = {}
+		self._time = time
+	
+	def _should_reset(self, user_id: Union[int, str]) -> bool:
+		"""Check if 24 hours have passed since last reset."""
+		if user_id not in self._last_reset:
+			return False
+		return self._time.time() - self._last_reset[user_id] > self.ttl_seconds
+	
+	def _reset_user(self, user_id: Union[int, str]):
+		"""Clear history for a user and update reset timestamp."""
+		self._history.pop(user_id, None)
+		self._last_reset[user_id] = self._time.time()
+	
+	def add_to_history(self, user_id: Union[int, str], value: str):
+		"""
+		Add value to user's history with timestamp.
+		
+		Args:
+			user_id: The user's ID
+			value: The value that was shown (not the key)
+		"""
+		# Check if reset needed
+		if self._should_reset(user_id):
+			self._reset_user(user_id)
+		
+		if user_id not in self._history:
+			self._history[user_id] = {}
+			self._last_reset[user_id] = self._time.time()
+		
+		# Remove if exists (to update recency)
+		self._history[user_id].pop(value, None)
+		
+		# Add with current timestamp
+		self._history[user_id][value] = self._time.time()
+		
+		# Trim to max size (remove oldest)
+		while len(self._history[user_id]) > self.max_history:
+			# Find oldest entry
+			oldest_key = min(
+				self._history[user_id].keys(),
+				key=lambda k: self._history[user_id][k]
+			)
+			del self._history[user_id][oldest_key]
+	
+	def is_in_history(self, user_id: Union[int, str], value: str) -> bool:
+		"""Check if value is in user's recent history."""
+		# Check if reset needed first
+		if self._should_reset(user_id):
+			self._reset_user(user_id)
+			return False
+		
+		return value in self._history.get(user_id, {})
+	
+	def get_excluded_values(self, user_id: Union[int, str]) -> set:
+		"""
+		Get set of values to exclude from random selection.
+		
+		Args:
+			user_id: The user's ID
+			
+		Returns:
+			Set of values in the user's history
+		"""
+		if self._should_reset(user_id):
+			self._reset_user(user_id)
+			return set()
+		
+		return set(self._history.get(user_id, {}).keys())
+
+
 class DatabaseManager:
 	"""
 	Database manager encapsulating SqliteDict key-value operations
 	with an in-memory write-through cache and transparent dual integer/string
 	Discord user ID resolution.
+	Includes reverse index for O(1) value lookups.
 	"""
 	def __init__(self, db_name: str, preload: bool = True):
 		self.db = SqliteDict(db_name, autocommit=True)
 		self._cache: dict[Union[int, str], dict[str, str]] = {}
+		# NEW: Reverse index for O(1) value lookups
+		# Maps: normalized_value -> set[(user_id, key), ...]
+		self._value_index: dict[str, set[tuple[Union[int, str], str]]] = {}
 
 		if preload:
 			self._preload_cache()
+			self._build_reverse_index()
 
 	def _preload_cache(self):
 		"""Warms the in-memory cache with all existing entries from SQLite on startup."""
@@ -23,6 +122,14 @@ class DatabaseManager:
 				self._cache[user_key] = dict(self.db[user_key])
 		except Exception as e:
 			print(f"Notice: Cache preload encountered: {e}")
+
+	def _build_reverse_index(self):
+		"""Builds the reverse index from preloaded cache."""
+		for user_id, user_db in self._cache.items():
+			for key, value in user_db.items():
+				normalized = value.strip()
+				if normalized:
+					self._value_index.setdefault(normalized, set()).add((user_id, key))
 
 	def _get_user_entry(self, user: Union[int, str, discord.User, discord.Member]) -> tuple[Union[int, str], dict]:
 		"""
@@ -64,13 +171,29 @@ class DatabaseManager:
 			return constants.VALUE_TOO_LONG
 
 		key_user, user_db = self._get_user_entry(user)
-		if key in user_db and not overwrite:
+		
+		# Handle overwrite: remove old value from reverse index
+		if key in user_db and overwrite:
+			old_value = user_db[key]
+			old_normalized = old_value.strip()
+			if old_normalized and old_normalized in self._value_index:
+				self._value_index[old_normalized].discard((key_user, key))
+				# Clean up empty sets
+				if not self._value_index[old_normalized]:
+					del self._value_index[old_normalized]
+		elif key in user_db and not overwrite:
 			return constants.KEY_EXISTS_ADD
 
 		if key not in user_db and len(user_db) >= constants.MAX_KEYS_PER_USER:
 			return constants.KEY_LIMIT_REACHED
 
 		user_db[key] = value
+		
+		# Update reverse index for new value
+		normalized = value.strip()
+		if normalized:
+			self._value_index.setdefault(normalized, set()).add((key_user, key))
+		
 		# Write-through to SQLite and cache
 		self.db[key_user] = user_db
 		self._cache[key_user] = user_db
@@ -89,6 +212,7 @@ class DatabaseManager:
 	def rename_key(self, user: Union[int, str, discord.User, discord.Member], old_key: str, new_key: str, overwrite: bool = False) -> int:
 		"""
 		Renames an existing key with write-through cache update.
+		Updates reverse index to reflect the new key name.
 		Returns:
 		 0 on success
 		-1 if user has no keys
@@ -107,6 +231,13 @@ class DatabaseManager:
 		if new_key in user_db and not overwrite:
 			return -3
 
+		# Update reverse index: remove old_key, add new_key
+		value = user_db[old_key]
+		normalized = value.strip()
+		if normalized and normalized in self._value_index:
+			self._value_index[normalized].discard((key_user, old_key))
+			self._value_index[normalized].add((key_user, new_key))
+
 		user_db[new_key] = user_db.pop(old_key)
 		self.db[key_user] = user_db
 		self._cache[key_user] = user_db
@@ -116,6 +247,15 @@ class DatabaseManager:
 		"""Deletes a key with write-through update to SQLite and memory cache."""
 		key_user, user_db = self._get_user_entry(user)
 		if key in user_db:
+			# Remove from reverse index first
+			value = user_db[key]
+			normalized = value.strip()
+			if normalized and normalized in self._value_index:
+				self._value_index[normalized].discard((key_user, key))
+				# Clean up empty sets
+				if not self._value_index[normalized]:
+					del self._value_index[normalized]
+			
 			del user_db[key]
 			self.db[key_user] = user_db
 			self._cache[key_user] = user_db
@@ -126,6 +266,14 @@ class DatabaseManager:
 		"""Mass-deletes all keys for a user in memory cache and SQLite."""
 		key_user, user_db = self._get_user_entry(user)
 		if user_db:
+			# Remove all entries from reverse index
+			for key, value in user_db.items():
+				normalized = value.strip()
+				if normalized and normalized in self._value_index:
+					self._value_index[normalized].discard((key_user, key))
+					if not self._value_index[normalized]:
+						del self._value_index[normalized]
+			
 			user_db.clear()
 			self.db[key_user] = user_db
 			self._cache[key_user] = user_db
@@ -139,24 +287,18 @@ class DatabaseManager:
 	def find_all_keys_by_value(self, value: str, user: Optional[Union[int, str, discord.User, discord.Member]] = None) -> list[tuple[Union[int, str], str]]:
 		"""
 		Reverse-lookup: finds all (user_id, key) pairs matching the given content.
+		Uses O(1) reverse index lookup instead of O(n) linear scan.
 		If user is provided, searches only that user's entries.
-		Scans the preloaded in-memory cache with zero SQLite read overhead.
 		"""
-		results = []
 		normalized_value = value.strip()
-
+		
+		# O(1) lookup from reverse index
+		results = list(self._value_index.get(normalized_value, set()))
+		
 		if user is not None:
-			user_id_key, user_db = self._get_user_entry(user)
-			for key, stored_value in user_db.items():
-				if stored_value.strip() == normalized_value:
-					results.append((user_id_key, key))
-			return results
-
-		# Iterate fast in-memory cache
-		for user_id, user_db in self._cache.items():
-			for key, stored_value in user_db.items():
-				if stored_value.strip() == normalized_value:
-					results.append((user_id, key))
+			user_id_key, _ = self._get_user_entry(user)
+			results = [(uid, key) for uid, key in results if uid == user_id_key]
+		
 		return results
 
 	def copy_database(self, new_db: SqliteDict) -> SqliteDict:
@@ -196,4 +338,14 @@ class DatabaseManager:
 	def close(self):
 		"""Flushes and closes the underlying SQLite connection."""
 		self.db.close()
+
+	def get_random_history_cache(self) -> RandomHistoryCache:
+		"""
+		Returns or creates the shared RandomHistoryCache instance.
+		Lazily initializes on first access.
+		"""
+		if not hasattr(self, '_random_history_cache'):
+			self._random_history_cache = RandomHistoryCache()
+		return self._random_history_cache
+
 

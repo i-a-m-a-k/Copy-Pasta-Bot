@@ -2,18 +2,18 @@ import io
 import asyncio
 from typing import Optional, Union, Callable
 import aiohttp
+
 try:
-	from lumaai import AsyncLumaAI
+	import luma_agents
+	from luma_agents import AsyncLuma
 except ImportError:
-	AsyncLumaAI = None
-from lumaai import LumaAI
+	luma_agents = None
+	AsyncLuma = None
 
 import discord
 import constants
 import do_not_push
-import time
 import argparse
-import shlex
 import os
 import csv
 from datetime import datetime
@@ -21,8 +21,33 @@ from ui import (
 	error_embed,
 	warning_embed,
 	get_http_session,
-	extract_image_url
+	extract_media_urls,
+	guess_video_mime_type,
+	validate_video_url,
+	MAX_IMAGE_DOWNLOAD_SIZE,
 )
+
+# Max download size for Luma AI generated media (100 MB for videos)
+MAX_DREAM_DOWNLOAD_SIZE = 100 * 1024 * 1024  # 100 MB
+
+# --- Luma Agents defaults & valid values (from the luma-agents SDK types) ---
+
+DEFAULT_IMAGE_MODEL = "uni-1"
+MAX_IMAGE_MODEL = "uni-1-max"
+VIDEO_MODEL = "ray-3.2"
+DEFAULT_VIDEO_RESOLUTION = "540p"
+DEFAULT_VIDEO_DURATION = "5s"
+
+VALID_ASPECT_RATIOS = ("1:1", "3:2", "2:3", "4:3", "3:4", "16:9", "9:16", "21:9", "2:1", "1:2", "3:1", "1:3")
+VALID_VIDEO_RESOLUTIONS = ("360p", "540p", "720p", "1080p")
+VALID_VIDEO_DURATIONS = ("5s", "10s")
+VALID_EDIT_STRENGTHS = ("adhere_1", "adhere_2", "adhere_3", "flex_1", "flex_2", "flex_3", "reimagine_1", "reimagine_2", "reimagine_3")
+VALID_LAYER_RESOLUTIONS = ("1k", "2k")
+
+# High-cost options restricted to admins
+ADMIN_ONLY_FLAGS = {"max", "web_search", "video_edit", "video_reframe", "layering"}
+ADMIN_VIDEO_RESOLUTIONS = {"1080p"}
+ADMIN_VIDEO_DURATIONS = {"10s"}
 
 # Content moderation configuration
 MODERATION_THRESHOLDS = {
@@ -163,115 +188,227 @@ def get_banned_users() -> list[dict]:
 		return []
 
 
+def _build_parser() -> argparse.ArgumentParser:
+	parser = argparse.ArgumentParser(add_help=False)
+	# Generation modes (mutually exclusive, validated later)
+	parser.add_argument('-v', '--video', action='store_true', help='Generate a video instead of an image')
+	parser.add_argument('-i2v', '--image-to-video', action='store_true', help='Transform a replied image into a video')
+	parser.add_argument('-modify', '--modify-image', action='store_true', help='Edit the replied image with a prompt')
+	parser.add_argument('-iref', '--image-ref', action='store_true', help='Use replied image as a content/style reference')
+	parser.add_argument('-vedit', '--video-edit', action='store_true', help='Edit a replied video with a prompt')
+	parser.add_argument('-reframe', '--video-reframe', action='store_true', help='Re-crop a replied video to a new aspect ratio')
+	parser.add_argument('-layers', '--layering', action='store_true', help='Decompose a replied image into layers')
+	# Options
+	parser.add_argument('-max', '--max-quality', action='store_true', help='Use uni-1-max image model')
+	parser.add_argument('-ar', '--aspect-ratio', type=str, default=None, help='Aspect ratio (e.g. 16:9)')
+	parser.add_argument('-res', '--resolution', type=str, default=None, help='Video resolution (360p/540p/720p/1080p)')
+	parser.add_argument('-d', '--duration', type=str, default=None, help='Video duration (5s/10s)')
+	parser.add_argument('-loop', action='store_true', help='Seamless looping video')
+	parser.add_argument('-end', '--end-frame', action='store_true', help='Use 2nd replied image as video end frame')
+	parser.add_argument('-manga', action='store_true', help='Manga style preset')
+	parser.add_argument('-png', action='store_true', help='PNG output format')
+	parser.add_argument('-web', '--web-search', action='store_true', help='Web-search grounding')
+	parser.add_argument('-strength', type=str, default=None, help='Video edit strength (adhere_1-3/flex_1-3/reimagine_1-3)')
+	parser.add_argument('-lres', '--layer-resolution', type=str, default=None, help='Layering resolution (1k/2k)')
+	parser.add_argument('prompt', nargs='*', help='The prompt for generation')
+	return parser
+
+def _usage_embed(is_admin: bool) -> discord.Embed:
+	embed = discord.Embed(
+		title="Dream Command Usage",
+		description="Generate AI images and videos using Luma AI.",
+		color=discord.Color.blurple()
+	)
+	embed.add_field(
+		name="Basic Usage",
+		value=(
+			"• `;;dream <prompt>` : Generate an image\n"
+			"• `;;dream -v <prompt>` : Generate a 5s video\n"
+			"• `;;dream -i2v [prompt]` : Animate a replied image\n"
+			"• `;;dream -modify <prompt>` : Edit a replied image"
+		),
+		inline=False
+	)
+	embed.add_field(
+		name="Options",
+		value=(
+			"• **`-ar <ratio>`** : Aspect ratio (" + ", ".join(VALID_ASPECT_RATIOS[:7]) + ", …)\n"
+			"• **`-res <360p|540p|720p>`** : Video resolution (default 540p)\n"
+			"• **`-d <5s>`** : Video duration\n"
+			"• **`-loop`** : Seamless loop (video)\n"
+			"• **`-end`** : 2nd replied image as video end frame\n"
+			"• **`-iref`** : Replied image as reference\n"
+			"• **`-manga`** : Manga style preset\n"
+			"• **`-png`** : PNG output"
+		),
+		inline=False
+	)
+	if is_admin:
+		embed.add_field(
+			name="Admin Options",
+			value=(
+				"• **`-max`** : uni-1-max image quality\n"
+				"• **`-res 1080p` / `-d 10s`** : Top-tier video\n"
+				"• **`-web`** : Web-search grounding\n"
+				"• **`-vedit [-strength <preset>]`** : Edit replied video\n"
+				"• **`-reframe -ar <ratio>`** : Re-crop replied video\n"
+				"• **`-layers [-lres <1k|2k>]`** : Split replied image into layers"
+			),
+			inline=False
+		)
+	return embed
+
+
 async def handle_dream_command(user, args, message=None):
+	prompt = "unknown"
+	display_generation_type = "unknown"
 	try:
 		user_id = user.id
 		is_admin = user_id in getattr(do_not_push, 'LUMA_USERS', []) or user_id in getattr(do_not_push, 'ADMINS', [])
 
 		if not is_admin and await asyncio.to_thread(is_user_banned, user_id):
 			return error_embed("You are not allowed to use the dream command.", title="🚫 Access Denied")
-		
-		# Parse the command arguments
-		parser = argparse.ArgumentParser(add_help=False)
-		parser.add_argument('-v', '--video', action='store_true', help='Generate a video instead of an image')
-		parser.add_argument('-i2v', '--image-to-video', action='store_true', help='Transform an image into a video')
-		parser.add_argument('-iref', '--image-ref', action='store_true', help='Use replied image as an image reference')
-		parser.add_argument('-sref', '--style-ref', action='store_true', help='Use replied image as a style reference')
-		parser.add_argument('-cref', '--character-ref', action='store_true', help='Use replied image as a character reference')
-		parser.add_argument('-modify', '--modify-image', action='store_true', help='Modify the replied image')
-		parser.add_argument('-w', '--weight', type=float, default=None, help='Weight of the image reference (0.0 to 1.0)')
-		parser.add_argument('prompt', nargs='*', help='The prompt for generation')
-		
-		# Convert args to a string and use shlex to handle quoting
+
+		if AsyncLuma is None:
+			return error_embed("The `luma-agents` package is not installed. Please ask the bot owner to update dependencies.", title="❌ Configuration Error")
+
+		# Parse the command arguments. Plain whitespace split (not shlex) so
+		# apostrophes/quotes in free-text prompts (e.g. "a cat's life") never break parsing.
+		parser = _build_parser()
 		args_string = " ".join(args[1:]) if args and args[0].lower() == "dream" else " ".join(args)
 		try:
-			parsed_args = parser.parse_args(shlex.split(args_string))
-			is_video = parsed_args.video
-			is_image_to_video = parsed_args.image_to_video
-			has_iref = parsed_args.image_ref
-			has_sref = parsed_args.style_ref
-			has_cref = parsed_args.character_ref
-			has_modify = parsed_args.modify_image
-			weight_val = parsed_args.weight
-			prompt = " ".join(parsed_args.prompt)
-		except Exception:
-			# Fallback for simpler parsing if argparse fails
-			is_video = "-v" in args_string or "--video" in args_string
-			is_image_to_video = "-i2v" in args_string or "--image-to-video" in args_string
-			has_iref = "-iref" in args_string or "--image-ref" in args_string
-			has_sref = "-sref" in args_string or "--style-ref" in args_string
-			has_cref = "-cref" in args_string or "--character-ref" in args_string
-			has_modify = "-modify" in args_string or "--modify-image" in args_string
-			
-			# Fallback parsing for weight
-			weight_val = None
-			if "-w" in args_string or "--weight" in args_string:
-				parts = args_string.split()
-				for i, p in enumerate(parts):
-					if p in ["-w", "--weight"] and i + 1 < len(parts):
-						try:
-							weight_val = float(parts[i+1])
-						except ValueError:
-							pass
-						break
-			
-			# Remove the flags from the prompt
-			prompt = args_string
-			for flag in ["-v", "--video", "-i2v", "--image-to-video", "-iref", "--image-ref", "-sref", "--style-ref", "-cref", "--character-ref", "-modify", "--modify-image"]:
-				prompt = prompt.replace(flag, "")
-			if weight_val is not None:
-				weight_str = f"-w {weight_val}" if f"-w {weight_val}" in prompt else (f"--weight {weight_val}" if f"--weight {weight_val}" in prompt else "")
-				if weight_str:
-					prompt = prompt.replace(weight_str, "")
+			parsed = parser.parse_args(args_string.split())
+			prompt = " ".join(parsed.prompt).strip()
+		except (Exception, SystemExit):
+			# argparse raises SystemExit on bad flags / missing values
+			return error_embed("Could not parse arguments. Check your flags.", title="❌ Invalid Arguments")
 
-				prompt = prompt.replace("-w", "").replace("--weight", "")
-
-			prompt = prompt.strip()
-		
-		# Determine current generation type - combine video and image-to-video into "video"
-		requires_replied_image = is_image_to_video or has_iref or has_sref or has_cref or has_modify
-		
-		image_url = None
-		if requires_replied_image:
-			if not message:
-				return warning_embed("This generation type requires you to reply to a message containing an image.", title="⚠️ Image Required")
-
-			image_url = extract_image_url(reply=message)
-			if not image_url:
-				return warning_embed("The message you replied to doesn't contain any valid images.", title="⚠️ Image Not Found")
-		
-		num_advanced_flags = sum([has_iref, has_sref, has_cref, has_modify])
-		if num_advanced_flags > 1:
-			return warning_embed("Please use only one advanced image reference flag at a time (`-iref`, `-sref`, `-cref`, or `-modify`).", title="⚠️ Conflicting Flags")
-		
-		# Allow prompt to be empty ONLY if we are doing modify or image_to_video
-		if not prompt and not is_image_to_video and not has_modify:
-			embed = discord.Embed(
-				title="Dream Command Usage",
-				description="Generate AI images and videos using Luma AI.",
-				color=discord.Color.blurple()
+		# --- Mode selection (mutually exclusive) ---
+		modes = {
+			"video": parsed.video,
+			"image-to-video": parsed.image_to_video,
+			"image_edit": parsed.modify_image,
+			"video_edit": parsed.video_edit,
+			"video_reframe": parsed.video_reframe,
+			"layering": parsed.layering,
+		}
+		active_modes = [m for m, on in modes.items() if on]
+		if len(active_modes) > 1:
+			return warning_embed(
+				"Please use only one mode flag at a time (`-v`, `-i2v`, `-modify`, `-vedit`, `-reframe`, `-layers`).",
+				title="⚠️ Conflicting Flags"
 			)
-			embed.add_field(
-				name="Basic Usage",
-				value="• `;;dream <prompt>` : Generate an image\n• `;;dream -v <prompt>` : Generate a 5s video",
-				inline=False
-			)
-			if is_admin:
-				embed.add_field(
-					name="Advanced Options (Admins)",
-					value=(
-						"• **`-v`** : Video generation\n"
-						"• **`-i2v`** : Transform replied image to video\n"
-						"• **`-iref`** : Use replied image as reference (`-w <0.0-1.0>` for weight)\n"
-						"• **`-sref`** : Use replied image as style reference\n"
-						"• **`-cref`** : Use replied image as character reference\n"
-						"• **`-modify`** : Modify replied image with prompt"
-					),
-					inline=False
+		mode = active_modes[0] if active_modes else "image"
+		if parsed.image_ref and mode != "image":
+			return warning_embed("`-iref` only applies to plain image generation.", title="⚠️ Incompatible Options")
+		is_video_type = mode in ("video", "image-to-video", "video_edit", "video_reframe")
+
+		# --- Admin gating ---
+		if not is_admin:
+			used_admin_flags = []
+			if parsed.max_quality:
+				used_admin_flags.append("`-max`")
+			if parsed.web_search:
+				used_admin_flags.append("`-web`")
+			if parsed.video_edit:
+				used_admin_flags.append("`-vedit`")
+			if parsed.video_reframe:
+				used_admin_flags.append("`-reframe`")
+			if parsed.layering:
+				used_admin_flags.append("`-layers`")
+			if parsed.resolution and parsed.resolution in ADMIN_VIDEO_RESOLUTIONS:
+				used_admin_flags.append(f"`-res {parsed.resolution}`")
+			if parsed.duration and parsed.duration in ADMIN_VIDEO_DURATIONS:
+				used_admin_flags.append(f"`-d {parsed.duration}`")
+			if used_admin_flags:
+				return warning_embed(
+					f"The following option(s) are admin-only: {', '.join(used_admin_flags)}.",
+					title="⚠️ Admin-Only Option"
 				)
-			return embed
-		
-		# Check content moderation
+
+		# --- Option validation ---
+		def _clean_opt(value: str) -> str:
+			return value.strip().strip('"').strip("'").strip().lower()
+
+		aspect_ratio = None
+		if parsed.aspect_ratio:
+			aspect_ratio = _clean_opt(parsed.aspect_ratio)
+			if aspect_ratio not in VALID_ASPECT_RATIOS:
+				return warning_embed(f"Invalid aspect ratio `{parsed.aspect_ratio}`. Valid: {', '.join(VALID_ASPECT_RATIOS)}", title="⚠️ Invalid Aspect Ratio")
+
+		resolution = None
+		if parsed.resolution:
+			resolution = _clean_opt(parsed.resolution)
+			if resolution not in VALID_VIDEO_RESOLUTIONS:
+				return warning_embed(f"Invalid resolution `{parsed.resolution}`. Valid: {', '.join(VALID_VIDEO_RESOLUTIONS)}", title="⚠️ Invalid Resolution")
+
+		duration = None
+		if parsed.duration:
+			duration = _clean_opt(parsed.duration)
+			if duration not in VALID_VIDEO_DURATIONS:
+				return warning_embed(f"Invalid duration `{parsed.duration}`. Valid: {', '.join(VALID_VIDEO_DURATIONS)}", title="⚠️ Invalid Duration")
+
+		strength = None
+		if parsed.strength:
+			strength = _clean_opt(parsed.strength)
+			if strength not in VALID_EDIT_STRENGTHS:
+				return warning_embed(f"Invalid strength `{parsed.strength}`. Valid: {', '.join(VALID_EDIT_STRENGTHS)}", title="⚠️ Invalid Strength")
+
+		layer_resolution = None
+		if parsed.layer_resolution:
+			layer_resolution = _clean_opt(parsed.layer_resolution)
+			if layer_resolution not in VALID_LAYER_RESOLUTIONS:
+				return warning_embed(f"Invalid layer resolution `{parsed.layer_resolution}`. Valid: {', '.join(VALID_LAYER_RESOLUTIONS)}", title="⚠️ Invalid Layer Resolution")
+
+		if parsed.loop and duration == "10s":
+			return warning_embed("`-loop` is not supported with `-d 10s`.", title="⚠️ Incompatible Options")
+		if parsed.loop and not is_video_type:
+			return warning_embed("`-loop` only applies to video generation.", title="⚠️ Incompatible Options")
+		if parsed.end_frame and not (is_video_type and mode != "video_edit" and mode != "video_reframe"):
+			return warning_embed("`-end` only applies to video / image-to-video generation.", title="⚠️ Incompatible Options")
+		if strength and mode != "video_edit":
+			return warning_embed("`-strength` only applies to `-vedit`.", title="⚠️ Incompatible Options")
+		if layer_resolution and mode != "layering":
+			return warning_embed("`-lres` only applies to `-layers`.", title="⚠️ Incompatible Options")
+		if (resolution or duration) and not is_video_type:
+			return warning_embed("`-res` / `-d` only apply to video generation.", title="⚠️ Incompatible Options")
+		if (parsed.manga or parsed.png) and is_video_type:
+			return warning_embed("`-manga` / `-png` only apply to image generation.", title="⚠️ Incompatible Options")
+		if mode == "video_reframe" and not aspect_ratio:
+			return warning_embed("`-reframe` requires a target aspect ratio, e.g. `;;dream -reframe -ar 9:16`.", title="⚠️ Aspect Ratio Required")
+
+		# --- Media requirements ---
+		needs_image = mode in ("image-to-video", "image_edit", "layering") or (mode == "image" and parsed.image_ref)
+		needs_video = mode in ("video_edit", "video_reframe")
+
+		image_urls: list[str] = []
+		video_urls: list[str] = []
+		if message and (needs_image or needs_video or parsed.end_frame or mode == "image-to-video"):
+			image_urls, video_urls = extract_media_urls(reply=message)
+
+		if needs_image and not image_urls:
+			return warning_embed("This mode requires you to reply to a message containing an image.", title="⚠️ Image Required")
+		if needs_video and not video_urls:
+			return warning_embed("This mode requires you to reply to a message containing a video.", title="⚠️ Video Required")
+		if parsed.end_frame and len(image_urls) < 2:
+			return warning_embed("`-end` requires a replied message containing two images (start + end frame).", title="⚠️ Two Images Required")
+
+		# --- Video source validation ---
+		# Verify the video URL is reachable, is actually a video, and is within size limits
+		# before sending it to the Luma API (prevents abuse and wasted API credits).
+		if needs_video and video_urls:
+			is_valid, detected_mime, err_msg = await validate_video_url(video_urls[0])
+			if not is_valid:
+				return error_embed(err_msg, title="❌ Invalid Video")
+
+		# --- Prompt requirements ---
+		prompt_optional = mode in ("image-to-video", "image_edit", "video_reframe", "layering")
+		if not prompt and not prompt_optional:
+			return _usage_embed(is_admin)
+		if mode == "layering" and len(prompt) > 500:
+			return warning_embed("The `-layers` prompt is limited to 500 characters.", title="⚠️ Prompt Too Long")
+
+		# --- Content moderation ---
 		if prompt:
 			openai_key = getattr(do_not_push, "OPENAI_API_KEY", "")
 			if openai_key:
@@ -313,16 +450,96 @@ async def handle_dream_command(user, args, message=None):
 				except Exception as e:
 					print(f"Moderation API error: {e}")
 
-		# Initialize Luma AI client with auth_token
-		if AsyncLumaAI is not None:
-			client = AsyncLumaAI(auth_token=do_not_push.LUMA_API_KEY)
-			is_async_client = True
-		else:
-			client = LumaAI(auth_token=do_not_push.LUMA_API_KEY)
-			is_async_client = False
-		
-		# Get specific generation type for display purposes
-		display_generation_type = "image-to-video" if is_image_to_video else ("video" if is_video else "image")
+		client = AsyncLuma(auth_token=do_not_push.LUMA_API_KEY)
+
+		# --- Build the unified generation request ---
+		display_generation_type = mode
+		create_kwargs: dict = {
+			"prompt": prompt,
+			"user_id": str(user_id),
+		}
+
+		if mode == "image":
+			create_kwargs["type"] = "image"
+			create_kwargs["model"] = MAX_IMAGE_MODEL if parsed.max_quality else DEFAULT_IMAGE_MODEL
+			if aspect_ratio:
+				create_kwargs["aspect_ratio"] = aspect_ratio
+			if parsed.manga:
+				create_kwargs["style"] = "manga"
+			if parsed.png:
+				create_kwargs["output_format"] = "png"
+			if parsed.web_search:
+				create_kwargs["web_search"] = True
+			if parsed.image_ref and image_urls:
+				create_kwargs["image_ref"] = [{"url": u} for u in image_urls[:9]]
+
+		elif mode == "image_edit":
+			create_kwargs["type"] = "image_edit"
+			create_kwargs["model"] = MAX_IMAGE_MODEL if parsed.max_quality else DEFAULT_IMAGE_MODEL
+			create_kwargs["source"] = {"url": image_urls[0]}
+			if not prompt:
+				create_kwargs["prompt"] = "Enhance this image"
+			if aspect_ratio:
+				create_kwargs["aspect_ratio"] = aspect_ratio
+			if parsed.png:
+				create_kwargs["output_format"] = "png"
+			if len(image_urls) > 1:
+				create_kwargs["image_ref"] = [{"url": u} for u in image_urls[1:9]]
+
+		elif mode == "layering":
+			create_kwargs["type"] = "layering"
+			create_kwargs["model"] = DEFAULT_IMAGE_MODEL
+			create_kwargs["source"] = {"url": image_urls[0]}
+			if not prompt:
+				create_kwargs["prompt"] = "Split this image into layers"
+			create_kwargs["layering"] = {"resolution": layer_resolution or "1k"}
+
+		elif mode == "video_edit":
+			create_kwargs["type"] = "video_edit"
+			create_kwargs["model"] = VIDEO_MODEL
+			create_kwargs["source"] = {"url": video_urls[0], "media_type": guess_video_mime_type(video_urls[0])}
+			video_opts: dict = {}
+			if resolution:
+				video_opts["resolution"] = resolution
+			edit_opts: dict = {}
+			if strength:
+				edit_opts["strength"] = strength
+			if edit_opts:
+				video_opts["edit"] = edit_opts
+			if video_opts:
+				create_kwargs["video"] = video_opts
+
+		elif mode == "video_reframe":
+			create_kwargs["type"] = "video_reframe"
+			create_kwargs["model"] = VIDEO_MODEL
+			create_kwargs["source"] = {"url": video_urls[0], "media_type": guess_video_mime_type(video_urls[0])}
+			create_kwargs["aspect_ratio"] = aspect_ratio
+			if not prompt:
+				create_kwargs["prompt"] = "Reframe this video"
+			video_opts = {}
+			if resolution:
+				video_opts["resolution"] = resolution
+			if video_opts:
+				create_kwargs["video"] = video_opts
+
+		else:  # video / image-to-video
+			create_kwargs["type"] = "video"
+			create_kwargs["model"] = VIDEO_MODEL
+			if not prompt:
+				create_kwargs["prompt"] = "Transform this image into a cinematic video"
+			if aspect_ratio:
+				create_kwargs["aspect_ratio"] = aspect_ratio
+			video_opts = {
+				"resolution": resolution or DEFAULT_VIDEO_RESOLUTION,
+				"duration": duration or DEFAULT_VIDEO_DURATION,
+			}
+			if parsed.loop:
+				video_opts["loop"] = True
+			if image_urls:
+				video_opts["start_frame"] = {"url": image_urls[0]}
+				if parsed.end_frame and len(image_urls) >= 2:
+					video_opts["end_frame"] = {"url": image_urls[1]}
+			create_kwargs["video"] = video_opts
 
 		await asyncio.to_thread(
 			log_dream_command,
@@ -332,82 +549,39 @@ async def handle_dream_command(user, args, message=None):
 			generation_type=display_generation_type,
 			media_url=None
 		)
-		
-		# Create the generation request based on type
-		if is_image_to_video:
-			create_kwargs = {
-				"prompt": prompt if prompt else "Transform this image into a cinematic video",
-				"model": "ray-2",
-				"keyframes": {
-					"frame0": {
-						"type": "image",
-						"url": image_url
-					}
-				},
-				"resolution": "540p",
-				"duration": "5s"
-			}
-			if is_async_client:
-				generation = await client.generations.create(**create_kwargs)
-			else:
-				generation = await asyncio.to_thread(client.generations.create, **create_kwargs)
 
-		elif is_video:
-			create_kwargs = {
-				"prompt": prompt,
-				"model": "ray-2",
-				"resolution": "540p",
-				"duration": "5s"
-			}
-			if is_async_client:
-				generation = await client.generations.video.create(**create_kwargs)
-			else:
-				generation = await asyncio.to_thread(client.generations.video.create, **create_kwargs)
-		else:
-			kwargs = {
-				"prompt": prompt,
-				"model": "photon-1"
-			}
-			
-			if image_url:
-				safe_weight = None
-				if weight_val is not None:
-					safe_weight = max(0.0, min(1.0, weight_val))
-					
-				ref_dict = {"url": image_url}
-				if safe_weight is not None:
-					ref_dict["weight"] = safe_weight
-					
-				if has_iref:
-					kwargs["image_ref"] = [ref_dict]
-				elif has_sref:
-					kwargs["style_ref"] = [ref_dict]
-				elif has_cref:
-					kwargs["character_ref"] = {"identity0": {"images": [image_url]}}
-				elif has_modify:
-					kwargs["modify_image_ref"] = ref_dict
-			
-			if is_async_client:
-				generation = await client.generations.image.create(**kwargs)
-			else:
-				generation = await asyncio.to_thread(client.generations.image.create, **kwargs)
-		
+		try:
+			generation = await client.generations.create(**create_kwargs)
+		except luma_agents.RateLimitError:
+			return error_embed("Luma is rate limiting us right now. Please try again in a minute.", title="⏳ Rate Limited")
+		except luma_agents.AuthenticationError:
+			return error_embed("Luma API authentication failed. Please ask the bot owner to check the API key.", title="❌ Authentication Error")
+		except luma_agents.BadRequestError as e:
+			return error_embed(f"Luma rejected the request: {e.message if hasattr(e, 'message') else e}", title="❌ Invalid Request")
+		except luma_agents.APIConnectionError:
+			return error_embed("Could not reach the Luma API. Please try again later.", title="❌ Connection Error")
+
 		# Poll until completion
 		completed = False
 		polling_count = 0
 		max_polling = 120
-		
+
 		while not completed and polling_count < max_polling:
-			if is_async_client:
-				generation = await client.generations.get(id=generation.id)
-			else:
-				generation = await asyncio.to_thread(client.generations.get, id=generation.id)
-			
+			try:
+				generation = await client.generations.get(generation.id)
+			except luma_agents.APIError as e:
+				print(f"Dream polling error: {e}")
+				await asyncio.sleep(3)
+				polling_count += 1
+				continue
+
 			if generation.state == "completed":
 				completed = True
 			elif generation.state == "failed":
-				failure_reason = getattr(generation, 'failure_reason', 'Unknown reason')
-				if "moderation" in failure_reason.lower() or "400" in failure_reason:
+				failure_code = getattr(generation, 'failure_code', None) or ""
+				failure_reason = getattr(generation, 'failure_reason', None) or "Unknown reason"
+
+				if failure_code == "content_moderated":
 					if not is_admin:
 						await asyncio.to_thread(
 							add_banned_user,
@@ -417,7 +591,7 @@ async def handle_dream_command(user, args, message=None):
 						)
 						return error_embed("Your generation request violated content moderation policies. You have been banned from using the dream command.", title="🚫 Moderation Violation")
 					return warning_embed(f"{display_generation_type.capitalize()} generation violated moderation policies: {failure_reason}", title="⚠️ Moderation Violation")
-				
+
 				await asyncio.to_thread(
 					log_dream_command,
 					user_id=user.id,
@@ -425,14 +599,14 @@ async def handle_dream_command(user, args, message=None):
 					prompt=prompt,
 					generation_type=display_generation_type,
 					media_url=None,
-					status="fail: " + failure_reason
+					status=f"fail: {failure_code} {failure_reason}".strip()
 				)
 				return error_embed(f"{display_generation_type.capitalize()} generation failed: {failure_reason}", title="❌ Generation Failed")
-			
-			polling_interval = 5 if (is_video or is_image_to_video) else 3
+
+			polling_interval = 5 if is_video_type else 3
 			await asyncio.sleep(polling_interval)
 			polling_count += 1
-			
+
 		if not completed:
 			await asyncio.to_thread(
 				log_dream_command,
@@ -444,16 +618,16 @@ async def handle_dream_command(user, args, message=None):
 				status="fail: timeout"
 			)
 			return error_embed(f"{display_generation_type.capitalize()} generation timed out. Please try again later.", title="⏱️ Generation Timeout")
-		
-		# Get the media URL and appropriate file extension
-		if is_video or is_image_to_video:
-			media_url = generation.assets.video
-			file_extension = "mp4"
-			discord_filename = "dream_video_result.mp4"
+
+		# --- Collect outputs ---
+		outputs = list(generation.output or [])
+		if not outputs:
+			return error_embed("Generation completed but returned no output.", title="❌ Generation Error")
+
+		if is_video_type:
+			media_url = next((o.url for o in outputs if o.type == "video"), outputs[0].url)
 		else:
-			media_url = generation.assets.image
-			file_extension = "jpg"
-			discord_filename = "dream_result.jpg"
+			media_url = next((o.url for o in outputs if o.type == "image"), outputs[0].url)
 
 		await asyncio.to_thread(
 			log_dream_command,
@@ -464,36 +638,66 @@ async def handle_dream_command(user, args, message=None):
 			media_url=media_url,
 			status="success"
 		)
-		
-		# Download the generated content directly into memory using shared aiohttp session
+
 		session = await get_http_session()
+
+		if mode == "layering":
+			# Download every layer and send them all in one message
+			files = []
+			for i, out in enumerate(outputs):
+				async with session.get(out.url) as resp:
+					if resp.status != 200:
+						continue
+					content = await resp.read()
+					if len(content) > MAX_IMAGE_DOWNLOAD_SIZE:
+						continue
+				label = "layer"
+				if getattr(out, "layer", None) and getattr(out.layer, "label", None):
+					label = "".join(c if c.isalnum() or c in "-_" else "_" for c in out.layer.label.lower())
+				buf = io.BytesIO(content)
+				buf.seek(0)
+				files.append(discord.File(fp=buf, filename=f"dream_layer_{i}_{label}.png", description=f"Layer {i}: {label}"))
+			if not files:
+				return error_embed("Failed to download the generated layers.", title="❌ Download Failed")
+			return {"files": files}
+
 		async with session.get(media_url) as media_response:
 			if media_response.status != 200:
 				return error_embed(f"Failed to download generated media: HTTP {media_response.status}")
 			media_content = await media_response.read()
+			if len(media_content) > MAX_DREAM_DOWNLOAD_SIZE:
+				size_mb = len(media_content) / (1024 * 1024)
+				limit_mb = MAX_DREAM_DOWNLOAD_SIZE / (1024 * 1024)
+				return error_embed(f"Generated media too large ({size_mb:.1f} MB). Maximum: {limit_mb:.0f} MB.", title="❌ Download Too Large")
 
 		buffer = io.BytesIO(media_content)
 		buffer.seek(0)
-		
-		discord_file = discord.File(
+
+		if is_video_type:
+			discord_filename = "dream_video_result.mp4"
+		else:
+			discord_filename = "dream_result.png" if parsed.png else "dream_result.jpg"
+
+		return discord.File(
 			fp=buffer,
 			filename=discord_filename,
 			description=f"Dream {display_generation_type} completed for '{prompt}'"
 		)
-		
-		return discord_file
-		
+
 	except Exception as e:
 		error_message = str(e)
-		await asyncio.to_thread(
-			log_dream_command,
-			user_id=user.id,
-			username=user.name if hasattr(user, 'name') else str(user),
-			prompt=prompt if 'prompt' in locals() else "unknown",
-			generation_type=display_generation_type if 'display_generation_type' in locals() else "unknown",
-			media_url=None,
-			status=f"error: {error_message}"
-		)
+		try:
+			await asyncio.to_thread(
+				log_dream_command,
+				user_id=user.id,
+				username=user.name if hasattr(user, 'name') else str(user),
+				prompt=prompt,
+				generation_type=display_generation_type,
+				media_url=None,
+				status=f"error: {error_message}"
+			)
+		except Exception:
+			pass
 		return error_embed(f"Error generating content: {error_message}", title="❌ Generation Error")
 
 async def handle_dream(
@@ -522,6 +726,3 @@ async def handle_dream(
 
 	target_ref = reply or message
 	return await handle_dream_command(user, args, message=target_ref)
-
-
-

@@ -5,3 +5,4 @@ mysqlite.db
 __pycache__/
 ./cmds/__pycache__/
 db/
+.DS_Store

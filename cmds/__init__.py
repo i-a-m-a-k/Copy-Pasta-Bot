@@ -3,7 +3,7 @@ import inspect
 import discord
 import constants
 from core.database import DatabaseManager
-from core.config import is_command_disabled, is_admin
+from core.config import is_command_disabled, is_command_disabled_globally, is_admin
 from core.cooldown import CooldownManager
 from ui.embeds import warning_embed
 
@@ -49,6 +49,7 @@ class CommandHandler:
 			'export': lambda u, a, r, m: cp.handle_export(self.db, u, a, r, m),
 			'import': lambda u, a, r, m: cp.handle_import(self.db, u, a, r, m),
 			'vibematch': lambda u, a, r, m: cp.handle_vibematch(self.db, u, a, r),
+			'revsearch': lambda u, a, r, m: cp.handle_revsearch(self.db, u, a, r, m),
 
 			# --- Meme & Media Commands ---
 			'clap': mm.create_transform_handler('clap'),
@@ -67,6 +68,7 @@ class CommandHandler:
 			'dadjoke': lambda u, a, r, m: mm.handle_dadjoke(u, a, r, m),
 			'cat': lambda u, a, r, m: mm.handle_cat(u, a, r, m),
 			'lmgtfy': lambda u, a, r, m: mm.handle_lmgtfy(u, a, r, m),
+			'tr': lambda u, a, r, m: mm.handle_translate(u, a, r, m),
 			's': lambda u, a, r, m: mm.regexc.handle_regex(a, r),
 
 			# --- Admin & Permissions ---
@@ -99,10 +101,16 @@ class CommandHandler:
 
 		command = args[0]
 		if command in self.commands:
-			# Check if command is disabled for this server
-			if message and hasattr(message, 'guild') and message.guild:
-				if is_command_disabled(message.guild.id, command):
-					return warning_embed(f"Command `{command}` is disabled in this server.", title="🔒 Command Disabled")
+			# Disabled command checks (bot admins bypass all restrictions)
+			if not is_admin(user.id):
+				# Global disable check: applies everywhere (guilds AND DMs)
+				if is_command_disabled_globally(command):
+					return warning_embed(f"Command `{command}` is globally disabled by the bot owner.", title="🔒 Globally Disabled")
+
+				# Per-guild disable check: only applies in guilds
+				if message and hasattr(message, 'guild') and message.guild:
+					if is_command_disabled(message.guild.id, command):
+						return warning_embed(f"Command `{command}` is disabled in this server.", title="🔒 Command Disabled")
 
 			# Cooldown enforcement (exempt bot admins)
 			if not is_admin(user.id):

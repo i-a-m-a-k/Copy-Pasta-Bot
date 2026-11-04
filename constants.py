@@ -12,7 +12,6 @@ REGEX_EMPTY_MSG     = 'Cannot regex an empty message or a message with only atta
 REGEX_NOT_FOUND     = 'No matching pattern found.'
 
 # REGEX
-COMMAND 		= r'^;;\S' # commands preceded by ;; with no whitespace after
 REPLACE			= r';;\S+;;'
 
 # Key and Value Length Limits
@@ -21,16 +20,20 @@ MAX_VALUE_LENGTH = 2000
 KEY_TOO_LONG = f'Key name cannot exceed {MAX_KEY_LENGTH} characters.'
 VALUE_TOO_LONG = f'Key value cannot exceed {MAX_VALUE_LENGTH} characters.'
 
+# Random Command Settings
+RANDOM_HISTORY_SIZE = 30  # Number of recent values to exclude from random selection
+RANDOM_HISTORY_TTL_HOURS = 24  # Time after which history auto-resets
+
 # Per-User Key Limits
-MAX_KEYS_PER_USER = 1000
+MAX_KEYS_PER_USER = 2000
 KEY_LIMIT_REACHED = f'You have reached the maximum limit of {MAX_KEYS_PER_USER} saved keys. Please delete some keys using `;;delete <key>` before adding new ones.'
 
 # Set of Blacklisted user IDs (O(1) lookups)
 BLACKLIST: set[int] = set()
 
 # Cooldown Durations (seconds)
-DEFAULT_COOLDOWN = 10.0      # 10 seconds for all general commands
-DREAM_COOLDOWN = 60.0        # 60 seconds (1 minute) for dream generation
+DEFAULT_COOLDOWN = 5.0      # 10 seconds for all general commands
+DREAM_COOLDOWN = 150.0        # 60 seconds (1 minute) for dream generation
 
 AUTO_DELETE_DELAY = 60  # Auto-delete embeds/status responses after 60 seconds (1 minute)
 
@@ -38,4 +41,3 @@ AUTO_DELETE_DELAY = 60  # Auto-delete embeds/status responses after 60 seconds (
 DREAM_BANNED_FILE   = 'db/dream_banned_users.csv'
 DREAM_UNBANNED_FILE = 'db/dream_manually_unbanned_users.csv'
 DREAM_LOGS_FILE     = 'db/dream_logs.csv'
-

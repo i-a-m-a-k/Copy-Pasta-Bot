@@ -10,8 +10,13 @@ from .helpers import (
     get_http_session,
     close_http_session,
     is_image_attachment,
+    is_video_attachment,
     extract_image_url,
+    extract_media_urls,
+    guess_video_mime_type,
+    validate_video_url,
     fetch_image_bytes,
+    MAX_IMAGE_DOWNLOAD_SIZE,
 )
 
 __all__ = [
@@ -27,6 +32,11 @@ __all__ = [
     'get_http_session',
     'close_http_session',
     'is_image_attachment',
+    'is_video_attachment',
     'extract_image_url',
+    'extract_media_urls',
+    'guess_video_mime_type',
+    'validate_video_url',
     'fetch_image_bytes',
+    'MAX_IMAGE_DOWNLOAD_SIZE',
 ]
