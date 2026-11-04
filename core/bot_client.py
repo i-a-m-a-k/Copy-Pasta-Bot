@@ -116,7 +116,7 @@ class DiscordBot:
 		content = message.content.strip()
 		if content == ';;delmsg':
 			await handle_delmsg(self.client, message)
-		elif re.search(constants.REPLACE, content):
+		elif re.search(constants.REPLACE, content) and not self.command_handler.is_chain(content):
 			await handle_replacement(self.db_manager, message, self.command_handler.cooldown_manager)
 		elif content.startswith(';;') and len(content) > 2 and not content[2].isspace():
 			response = await self.command_handler.handle_command(
