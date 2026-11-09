@@ -11,6 +11,7 @@ from . import copypasta as cp
 from . import memes as mm
 from . import admin as adm
 from . import help as hp
+from . import chain
 
 class CommandHandler:
 	"""
@@ -93,6 +94,9 @@ class CommandHandler:
 		if not cmd.startswith(';;') or len(cmd) <= 2 or cmd[2].isspace():
 			return None
 
+		if self.is_chain(cmd):
+			return await self.handle_chain(user, cmd, reply, message)
+
 		cmd = cmd[2:]
 
 		args = cmd.split()
@@ -101,42 +105,113 @@ class CommandHandler:
 
 		command = args[0]
 		if command in self.commands:
-			# Disabled command checks (bot admins bypass all restrictions)
-			if not is_admin(user.id):
-				# Global disable check: applies everywhere (guilds AND DMs)
-				if is_command_disabled_globally(command):
-					return warning_embed(f"Command `{command}` is globally disabled by the bot owner.", title="🔒 Globally Disabled")
+			disabled = self._disabled_response(user, command, message)
+			if disabled:
+				return disabled
 
-				# Per-guild disable check: only applies in guilds
-				if message and hasattr(message, 'guild') and message.guild:
-					if is_command_disabled(message.guild.id, command):
-						return warning_embed(f"Command `{command}` is disabled in this server.", title="🔒 Command Disabled")
+			blocked, cooldown_response = self._apply_cooldown(user, command)
+			if blocked:
+				return cooldown_response
 
-			# Cooldown enforcement (exempt bot admins)
-			if not is_admin(user.id):
-				cd_status = self.cooldown_manager.check(user.id, command)
-				if cd_status is not None:
-					time_remaining, expires_timestamp, should_warn = cd_status
-					if should_warn:
-						return {
-							"embed": warning_embed(
-								f"You're on cooldown for `;;{command}`. You can use it again <t:{expires_timestamp}:R>.",
-								title="⏳ Cooldown Active"
-							),
-							"delete_after": max(1.0, time_remaining)
-						}
-					# Spam suppression: silently ignore further messages while on cooldown
-					return None
-
-				# Not on cooldown; start cooldown window for this command
-				self.cooldown_manager.trigger(user.id, command)
-
-			handler = self.commands[command]
-			result = handler(user, args, reply, message)
-			if inspect.isawaitable(result):
-				return await result
-			return result
+			return await self._run(command, user, args, reply, message)
 
 		return None
+
+	def is_chain(self, content: str) -> bool:
+		"""True when the message pipes a known command into further `;;` commands."""
+		content = content.strip()
+		if not content.startswith(';;'):
+			return False
+		stages = chain.split_chain(content)
+		first = stages[0][2:].split()
+		return len(stages) > 1 and bool(first) and first[0] in self.commands
+
+	async def handle_chain(
+		self,
+		user: discord.User,
+		cmd: str,
+		reply: Optional[discord.MessageReference] = None,
+		message: Optional[discord.Message] = None
+	) -> Optional[Union[str, discord.File, discord.Embed, dict]]:
+		"""Runs `;;a | ;;b | ;;c`, feeding each stage's text output into the next."""
+		stages = chain.parse_chain(cmd)
+		if isinstance(stages, discord.Embed):
+			return stages
+
+		for args in stages:
+			disabled = self._disabled_response(user, args[0], message)
+			if disabled:
+				return disabled
+
+		source = reply.resolved if reply is not None else None
+		if source is None:
+			return warning_embed("You need to reply to a message to use a command chain.")
+		if not source.content or not source.content.strip():
+			return warning_embed("The message you replied to has no text to chain.", title="⚠️ No Text Found")
+
+		blocked, cooldown_response = self._apply_cooldown(user, 'chain')
+		if blocked:
+			return cooldown_response
+
+		current = chain.as_reply(source.content, source)
+		for index, args in enumerate(stages, 1):
+			command = args[0]
+			result = await self._run(command, user, args, current, message)
+
+			if isinstance(result, discord.Embed):
+				return chain.stage_error(index, command, result)
+			if index == len(stages):
+				return result
+			if not isinstance(result, str) or not result.strip():
+				return warning_embed(f"Stage {index} (`{command}`) produced no text.", title="⛓️ Chain Stopped")
+			if len(result) > 2000:
+				return warning_embed(
+					f"Stage {index} (`{command}`) exceeded Discord's 2,000-character limit.",
+					title="⛓️ Chain Stopped"
+				)
+			current = chain.as_reply(result, source)
+
+		return None
+
+	def _disabled_response(self, user: discord.User, command: str, message: Optional[discord.Message]) -> Optional[discord.Embed]:
+		"""Returns a warning if the command is disabled globally or in this guild (admins bypass)."""
+		if is_admin(user.id):
+			return None
+		if is_command_disabled_globally(command):
+			return warning_embed(f"Command `{command}` is globally disabled by the bot owner.", title="🔒 Globally Disabled")
+		if message and hasattr(message, 'guild') and message.guild:
+			if is_command_disabled(message.guild.id, command):
+				return warning_embed(f"Command `{command}` is disabled in this server.", title="🔒 Command Disabled")
+		return None
+
+	def _apply_cooldown(self, user: discord.User, command: str) -> tuple[bool, Optional[dict]]:
+		"""
+		Checks and starts the cooldown for (user, command); admins are exempt.
+		Returns (blocked, response). A blocked call with no response is silently ignored.
+		"""
+		if is_admin(user.id):
+			return False, None
+
+		cd_status = self.cooldown_manager.check(user.id, command)
+		if cd_status is not None:
+			time_remaining, expires_timestamp, should_warn = cd_status
+			if should_warn:
+				return True, {
+					"embed": warning_embed(
+						f"You're on cooldown for `;;{command}`. You can use it again <t:{expires_timestamp}:R>.",
+						title="⏳ Cooldown Active"
+					),
+					"delete_after": max(1.0, time_remaining)
+				}
+			return True, None
+
+		self.cooldown_manager.trigger(user.id, command)
+		return False, None
+
+	async def _run(self, command: str, user: discord.User, args: list[str], reply, message):
+		result = self.commands[command](user, args, reply, message)
+		if inspect.isawaitable(result):
+			return await result
+		return result
 
 __all__ = ['CommandHandler']
