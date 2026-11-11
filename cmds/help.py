@@ -119,6 +119,10 @@ def handle_help(args: list[str]) -> discord.Embed:
 					"• **`enable <cmd>`** : Enable disabled command in server (Mods+)\n"
 					"• **`disable <cmd> -g`** : Globally disable command everywhere (Bot Admin)\n"
 					"• **`enable <cmd> -g`** : Globally enable command everywhere (Bot Admin)\n"
+					"• **`starboard`** : List all starboards (Mods+)\n"
+					"• **`starboard add <name> #channel [emoji] [n]`** : Add starboard\n"
+					"• **`starboard remove <name>`** : Remove starboard\n"
+					"• **`starboard edit <name> <field> <val>`** : Edit starboard\n"
 					"• **`ping`** : View bot latency and system status"
 				),
 				inline=False

@@ -77,6 +77,7 @@ class CommandHandler:
 			'blacklist_add': lambda u, a, r, m: adm.handle_blacklist_add(u, a, r),
 			'blacklist_remove': lambda u, a, r, m: adm.handle_blacklist_remove(u, a, r),
 			'ping': lambda u, a, r, m: adm.handle_ping(u, m, self.get_client),
+			'starboard': lambda u, a, r, m: adm.handle_starboard(u, a, m),
 
 			# --- Help ---
 			'help': lambda u, a, r, m: hp.handle_help(a),

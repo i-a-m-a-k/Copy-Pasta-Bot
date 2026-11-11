@@ -2,6 +2,7 @@ import os
 import sys
 import re
 import asyncio
+from typing import Optional
 import discord
 from sqlitedict import SqliteDict
 
@@ -19,6 +20,18 @@ from core.response_handler import (
 	handle_replacement,
 )
 from cmds import CommandHandler
+from cmds.admin.starboard import (
+	load_starboard_config,
+	load_starboard_posts,
+	starboard_config,
+	_posted_messages,
+	get_guild_starboards,
+	get_starboard_by_emoji,
+	get_posted_entry,
+	is_already_posted,
+	mark_posted,
+	unmark_posted,
+)
 from ui.embeds import warning_embed
 from ui.helpers import close_http_session
 
@@ -31,6 +44,7 @@ class DiscordBot:
 		self.token = token
 		intents = discord.Intents.default()
 		intents.message_content = True
+		intents.reactions = True
 		self.client = discord.Client(intents=intents)
 		self.db_manager = DatabaseManager(constants.DB_NAME)
 		self.command_handler = CommandHandler(
@@ -53,10 +67,50 @@ class DiscordBot:
 		disabled_commands.update(loaded_disabled)
 		print(f"Loaded disabled commands for {len(disabled_commands)} server(s).")
 
+		print("Loading starboard config...")
+		loaded_starboard = load_starboard_config()
+		starboard_config.clear()
+		starboard_config.update(loaded_starboard)
+		print(f"Loaded starboard config for {len(starboard_config)} server(s).")
+
+		print("Loading starboard post mappings...")
+		loaded_posts = load_starboard_posts()
+		_posted_messages.clear()
+		_posted_messages.update(loaded_posts)
+		total_posts = sum(len(m) for boards in _posted_messages.values() for m in boards.values())
+		print(f"Loaded {total_posts} starboard post mapping(s).")
+
 		self.setup_events()
 
 	def _get_user(self) -> discord.ClientUser:
 		return self.client.user
+
+	@staticmethod
+	def _extract_starboard_image(message: discord.Message) -> Optional[str]:
+		"""
+		Extract the best image URL from a message for the starboard embed.
+		Priority: image attachment > embed image > embed thumbnail > sticker.
+		"""
+		# 1. Image attachments
+		if message.attachments:
+			for att in message.attachments:
+				if att.content_type and att.content_type.startswith('image/'):
+					return att.url
+
+		# 2. Embed images / thumbnails
+		if message.embeds:
+			for emb in message.embeds:
+				if emb.image and emb.image.url:
+					return emb.image.url
+				if emb.thumbnail and emb.thumbnail.url:
+					return emb.thumbnail.url
+
+		# 3. Stickers
+		if message.stickers:
+			from ui.helpers import get_sticker_media_url
+			return get_sticker_media_url(message.stickers[0])
+
+		return None
 
 	async def update_status(self):
 		"""Periodic background task updating the bot presence with server count."""
@@ -110,6 +164,210 @@ class DiscordBot:
 				return
 
 			await self.process_message(message)
+
+		@self.client.event
+		async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
+			"""Starboard: create or update entries when reactions increase."""
+			if payload.guild_id is None:
+				return
+			await self._process_starboard_reaction(payload)
+
+		@self.client.event
+		async def on_raw_reaction_remove(payload: discord.RawReactionActionEvent):
+			"""Starboard: update count or delete entries when reactions decrease."""
+			if payload.guild_id is None:
+				return
+			await self._process_starboard_reaction(payload)
+
+	async def _process_starboard_reaction(self, payload: discord.RawReactionActionEvent):
+		"""
+		Unified starboard handler for both reaction add and remove events.
+		Creates, updates, or deletes starboard entries based on current count.
+		"""
+		reacted_emoji = str(payload.emoji)
+
+		# Find all starboards in this guild matching the reacted emoji
+		matching_boards = get_starboard_by_emoji(payload.guild_id, reacted_emoji)
+		if not matching_boards:
+			return
+
+		# Don't process reactions from the bot itself
+		if payload.user_id == self.client.user.id:
+			return
+
+		# Don't starboard messages that are already in a starboard channel
+		for sb in matching_boards:
+			if payload.channel_id == sb['channel_id']:
+				return
+
+		# Fetch the message to count total matching reactions
+		try:
+			channel = self.client.get_channel(payload.channel_id)
+			if channel is None:
+				channel = await self.client.fetch_channel(payload.channel_id)
+			target_message = await channel.fetch_message(payload.message_id)
+		except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+			return
+
+		# Count reactions matching the reacted emoji
+		reaction_count = 0
+		for reaction in target_message.reactions:
+			if str(reaction.emoji) == reacted_emoji:
+				reaction_count = reaction.count
+				break
+
+		# Resolve the replied-to message if the starred message is a reply
+		replied_message: Optional[discord.Message] = None
+		if target_message.reference and target_message.reference.message_id:
+			replied_message = target_message.reference.resolved
+			if replied_message is None:
+				try:
+					replied_message = await channel.fetch_message(target_message.reference.message_id)
+				except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+					pass
+
+		# Process each matching starboard
+		for sb in matching_boards:
+			existing_sb_msg_id = get_posted_entry(payload.guild_id, sb['name'], payload.message_id)
+			meets_threshold = reaction_count >= sb['threshold']
+
+			if existing_sb_msg_id is not None and existing_sb_msg_id > 0 and not meets_threshold:
+				# --- Below threshold: delete from starboard ---
+				# Always unmark first to prevent stale mappings on failure
+				unmark_posted(payload.guild_id, sb['name'], payload.message_id)
+				starboard_channel = self.client.get_channel(sb['channel_id'])
+				if starboard_channel is None:
+					try:
+						starboard_channel = await self.client.fetch_channel(sb['channel_id'])
+					except (discord.NotFound, discord.Forbidden):
+						continue
+				try:
+					sb_msg = await starboard_channel.fetch_message(existing_sb_msg_id)
+					await sb_msg.delete()
+				except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+					pass  # Already deleted or inaccessible; mapping already cleared
+
+			elif existing_sb_msg_id is not None and existing_sb_msg_id > 0 and meets_threshold:
+				# --- Above threshold: update the count in the embed ---
+				starboard_channel = self.client.get_channel(sb['channel_id'])
+				if starboard_channel is None:
+					try:
+						starboard_channel = await self.client.fetch_channel(sb['channel_id'])
+					except (discord.NotFound, discord.Forbidden):
+						continue
+				try:
+					sb_msg = await starboard_channel.fetch_message(existing_sb_msg_id)
+					embed = self._build_starboard_embed(
+						target_message, replied_message, reacted_emoji,
+						reaction_count, channel
+					)
+					await sb_msg.edit(embed=embed)
+				except discord.NotFound:
+					# Starboard message was manually deleted; clear stale mapping
+					# so a future threshold meet creates a fresh entry
+					unmark_posted(payload.guild_id, sb['name'], payload.message_id)
+				except (discord.Forbidden, discord.HTTPException):
+					pass
+
+			elif existing_sb_msg_id is not None and existing_sb_msg_id == 0:
+				# Placeholder from a concurrent send in progress — skip to avoid duplicates
+				continue
+
+			elif existing_sb_msg_id is None and meets_threshold:
+				# --- Not posted yet and meets threshold: create new entry ---
+				starboard_channel = self.client.get_channel(sb['channel_id'])
+				if starboard_channel is None:
+					try:
+						starboard_channel = await self.client.fetch_channel(sb['channel_id'])
+					except (discord.NotFound, discord.Forbidden):
+						print(f"Starboard channel {sb['channel_id']} not found for guild {payload.guild_id}")
+						continue
+
+				embed = self._build_starboard_embed(
+					target_message, replied_message, reacted_emoji,
+					reaction_count, channel
+				)
+
+				# Mark posted BEFORE sending to prevent race-condition duplicates.
+				# Use a placeholder (0) — updated with real ID after send succeeds.
+				mark_posted(payload.guild_id, sb['name'], payload.message_id, 0)
+
+				try:
+					sent_msg = await starboard_channel.send(embed=embed)
+					# Update mapping with the real starboard message ID
+					mark_posted(payload.guild_id, sb['name'], payload.message_id, sent_msg.id)
+				except (discord.Forbidden, discord.HTTPException) as e:
+					# Roll back the placeholder on failure
+					unmark_posted(payload.guild_id, sb['name'], payload.message_id)
+					print(f"Failed to post to starboard '{sb['name']}' in guild {payload.guild_id}: {e}")
+
+	def _build_starboard_embed(
+		self,
+		target_message: discord.Message,
+		replied_message: Optional[discord.Message],
+		reacted_emoji: str,
+		reaction_count: int,
+		channel
+	) -> discord.Embed:
+		"""Build the starboard embed for a message."""
+		author = target_message.author
+		embed = discord.Embed(
+			description=target_message.content[:2000] if target_message.content else None,
+			color=discord.Color.gold(),
+			timestamp=target_message.created_at
+		)
+		embed.set_author(
+			name=author.display_name,
+			icon_url=author.display_avatar.url
+		)
+		embed.set_footer(text=f"{reacted_emoji} {reaction_count} • #{getattr(channel, 'name', 'unknown')}")
+
+		# --- Main message media ---
+		main_image_url = self._extract_starboard_image(target_message)
+		if main_image_url:
+			embed.set_image(url=main_image_url)
+
+		# --- Replied-to message context ---
+		if replied_message:
+			replied_author = replied_message.author
+			replied_content = replied_message.content.strip() if replied_message.content else ''
+
+			replied_image_url = self._extract_starboard_image(replied_message)
+			has_replied_media = replied_image_url is not None
+			has_replied_attachments = bool(replied_message.attachments)
+			has_replied_stickers = bool(replied_message.stickers)
+
+			if replied_content:
+				preview = replied_content[:300]
+				if len(replied_content) > 300:
+					preview += '...'
+				reply_text = preview
+			elif has_replied_media or has_replied_attachments:
+				reply_text = '*[Media]*'
+			elif has_replied_stickers:
+				reply_text = '*[Sticker]*'
+			elif replied_message.embeds:
+				reply_text = '*[Embed]*'
+			else:
+				reply_text = '*[No content]*'
+
+			embed.add_field(
+				name=f"↩️ Replying to {replied_author.display_name}",
+				value=reply_text,
+				inline=False
+			)
+
+			# If the main message has no image but the replied-to does, use it
+			if not embed.image and replied_image_url:
+				embed.set_image(url=replied_image_url)
+
+		embed.add_field(
+			name="Source",
+			value=f"[Jump to message]({target_message.jump_url})",
+			inline=False
+		)
+
+		return embed
 
 	async def process_message(self, message: discord.Message):
 		"""Routes incoming messages to delmsg, key replacement, or command handler."""

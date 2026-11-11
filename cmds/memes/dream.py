@@ -188,6 +188,45 @@ def get_banned_users() -> list[dict]:
 		return []
 
 
+def _api_error_detail(error) -> str:
+	"""Extract a human-readable detail message from a luma_agents APIStatusError."""
+	try:
+		body = getattr(error, 'body', None)
+		if isinstance(body, dict):
+			detail = body.get('detail')
+			if isinstance(detail, str):
+				return detail
+			if isinstance(detail, dict):
+				return str(detail)
+			err = body.get('error')
+			if isinstance(err, dict) and err.get('message'):
+				return str(err['message'])
+	except Exception:
+		pass
+	return str(error)
+
+
+def _is_content_moderated_error(error) -> bool:
+	"""Detect Luma's synchronous content-policy rejection in an APIStatusError body."""
+	try:
+		body = getattr(error, 'body', None)
+		if isinstance(body, dict):
+			# Shape 1: {'detail': {'error': {'code': 'content_moderated', ...}}}
+			# Shape 2: {'error': {'code': 'content_moderated', ...}}
+			for container in (body.get('detail'), body):
+				if isinstance(container, dict):
+					err = container.get('error')
+					if isinstance(err, dict) and err.get('code') == 'content_moderated':
+						return True
+			# Shape 3: {'detail': '...content policy...'} string fallbacks
+			detail = body.get('detail')
+			if isinstance(detail, str) and 'content' in detail.lower() and ('moderat' in detail.lower() or 'policy' in detail.lower()):
+				return True
+	except Exception:
+		pass
+	return False
+
+
 def _build_parser() -> argparse.ArgumentParser:
 	parser = argparse.ArgumentParser(add_help=False)
 	# Generation modes (mutually exclusive, validated later)
@@ -552,12 +591,54 @@ async def handle_dream_command(user, args, message=None):
 
 		try:
 			generation = await client.generations.create(**create_kwargs)
+		except luma_agents.UnprocessableEntityError as e:
+			# Luma rejects policy-violating prompts synchronously with HTTP 422 and
+			# body {'error': {'code': 'content_moderated', ...}}. Ban on that.
+			if _is_content_moderated_error(e):
+				if not is_admin:
+					await asyncio.to_thread(
+						add_banned_user,
+						user_id=user.id,
+						username=user.name if hasattr(user, 'name') else str(user),
+						prompt=prompt
+					)
+					await asyncio.to_thread(
+						log_dream_command,
+						user_id=user.id,
+						username=user.name if hasattr(user, 'name') else str(user),
+						prompt=prompt,
+						generation_type=display_generation_type,
+						media_url=None,
+						status="fail: content_moderated (sync 422, banned)"
+					)
+					return error_embed("Your generation request violated content moderation policies. You have been banned from using the dream command.", title="🚫 Moderation Violation")
+				return warning_embed("Your prompt was rejected by Luma's content moderation policy.", title="⚠️ Moderation Violation")
+			return error_embed(f"Luma rejected the request: {_api_error_detail(e)}", title="❌ Invalid Request")
+		except luma_agents.BadRequestError as e:
+			if _is_content_moderated_error(e):
+				if not is_admin:
+					await asyncio.to_thread(
+						add_banned_user,
+						user_id=user.id,
+						username=user.name if hasattr(user, 'name') else str(user),
+						prompt=prompt
+					)
+					await asyncio.to_thread(
+						log_dream_command,
+						user_id=user.id,
+						username=user.name if hasattr(user, 'name') else str(user),
+						prompt=prompt,
+						generation_type=display_generation_type,
+						media_url=None,
+						status="fail: content_moderated (sync 400, banned)"
+					)
+					return error_embed("Your generation request violated content moderation policies. You have been banned from using the dream command.", title="🚫 Moderation Violation")
+				return warning_embed("Your prompt was rejected by Luma's content moderation policy.", title="⚠️ Moderation Violation")
+			return error_embed(f"Luma rejected the request: {_api_error_detail(e)}", title="❌ Invalid Request")
 		except luma_agents.RateLimitError:
 			return error_embed("Luma is rate limiting us right now. Please try again in a minute.", title="⏳ Rate Limited")
 		except luma_agents.AuthenticationError:
 			return error_embed("Luma API authentication failed. Please ask the bot owner to check the API key.", title="❌ Authentication Error")
-		except luma_agents.BadRequestError as e:
-			return error_embed(f"Luma rejected the request: {e.message if hasattr(e, 'message') else e}", title="❌ Invalid Request")
 		except luma_agents.APIConnectionError:
 			return error_embed("Could not reach the Luma API. Please try again later.", title="❌ Connection Error")
 

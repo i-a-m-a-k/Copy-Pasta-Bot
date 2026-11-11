@@ -85,7 +85,8 @@ async def handle_delmsg(client: discord.Client, message: discord.Message):
 	Bot admins can delete any bot message.
 	"""
 	if message.reference is None:
-		await message.reply(
+		await _safe_reply(
+			message,
 			embed=warning_embed("You need to reply to a bot message to use this command."),
 			delete_after=constants.AUTO_DELETE_DELAY
 		)
@@ -93,14 +94,16 @@ async def handle_delmsg(client: discord.Client, message: discord.Message):
 
 	replied_message = message.reference.resolved
 	if replied_message is None:
-		await message.reply(
+		await _safe_reply(
+			message,
 			embed=error_embed("Could not resolve replied message."),
 			delete_after=constants.AUTO_DELETE_DELAY
 		)
 		return
 
 	if replied_message.author.id != client.user.id:
-		await message.reply(
+		await _safe_reply(
+			message,
 			embed=error_embed("You can only delete messages sent by me."),
 			delete_after=constants.AUTO_DELETE_DELAY
 		)
@@ -113,14 +116,16 @@ async def handle_delmsg(client: discord.Client, message: discord.Message):
 				if replied_message.reference and replied_message.reference.message_id:
 					original_message = await message.channel.fetch_message(replied_message.reference.message_id)
 			except (discord.NotFound, discord.Forbidden, discord.HTTPException):
-				await message.reply(
+				await _safe_reply(
+					message,
 					embed=error_embed("Could not verify ownership of this bot reply."),
 					delete_after=constants.AUTO_DELETE_DELAY
 				)
 				return
 
 		if original_message.author.id != message.author.id:
-			await message.reply(
+			await _safe_reply(
+				message,
 				embed=error_embed("You can only delete bot messages that are replies to your own messages."),
 				delete_after=constants.AUTO_DELETE_DELAY
 			)
@@ -129,13 +134,15 @@ async def handle_delmsg(client: discord.Client, message: discord.Message):
 	try:
 		await replied_message.delete()
 	except discord.Forbidden:
-		await message.reply(
+		await _safe_reply(
+			message,
 			embed=error_embed("I don't have permission to delete that message."),
 			delete_after=constants.AUTO_DELETE_DELAY
 		)
 		return
 	except discord.HTTPException as e:
-		await message.reply(
+		await _safe_reply(
+			message,
 			embed=error_embed(f"Failed to delete: {e}"),
 			delete_after=constants.AUTO_DELETE_DELAY
 		)
@@ -233,7 +240,8 @@ async def handle_replacement(
 		try:
 			if len(files_to_send) == 1:
 				key, sticker_url, d_file = files_to_send[0]
-				sent_msg = await target.reply(
+				sent_msg = await _safe_reply(
+					target,
 					content=clean_text if clean_text else None,
 					file=d_file
 				)
@@ -245,7 +253,8 @@ async def handle_replacement(
 						db_manager.store_text(message.author.id, key, updated_val, overwrite=True)
 			else:
 				files = [item[2] for item in files_to_send]
-				sent_msg = await target.reply(
+				sent_msg = await _safe_reply(
+					target,
 					content=clean_text if clean_text else None,
 					files=files
 				)
@@ -262,9 +271,9 @@ async def handle_replacement(
 			print(f"Error sending/caching converted sticker GIF: {e}")
 			# Fall back to sending standard replaced text if file upload fails
 			if replaced_text:
-				await target.reply(replaced_text)
+				await _safe_reply(target, content=replaced_text)
 	elif replaced_text:
-		await target.reply(replaced_text)
+		await _safe_reply(target, content=replaced_text)
 
 async def _safe_reply(target: discord.Message, **kwargs) -> Optional[discord.Message]:
 	"""
