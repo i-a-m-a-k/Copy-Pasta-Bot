@@ -7,6 +7,7 @@ import discord
 import constants
 from core.config import is_admin
 from core.database import DatabaseManager
+from cmds.chain import split_chain
 from ui.embeds import error_embed, warning_embed
 from ui.helpers import (
 	LOTTIE_STICKER_REGEX,
@@ -350,7 +351,9 @@ async def send_response(
 		'random', 's', 'grandom', 'vaporwave', 'emojify', 'dream', 'thonkify', 'dadjoke', 'cat', 'lmgtfy'
 	}
 
-	if message.reference and message.reference.resolved and command_name in target_reply_cmds:
+	is_chain = len(split_chain(message.content)) > 1
+
+	if message.reference and message.reference.resolved and (command_name in target_reply_cmds or is_chain):
 		reply_to = message.reference.resolved
 	else:
 		reply_to = message

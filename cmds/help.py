@@ -98,6 +98,15 @@ def handle_help(args: list[str]) -> discord.Embed:
 				),
 				inline=False
 			)
+			embed.add_field(
+				name="Command Chaining (Reply to a message)",
+				value=(
+					"• **`;;tr fr | ;;copypasta | ;;owo`** : Pipe text through up to 4 commands\n"
+					"• Chainable: `tr`, `s`, `clap`, `zalgo`, `copypasta`, `owo`, `stretch`, `vaporwave`, `emojify`\n"
+					"• `mock` and `thonkify` can only be the last command"
+				),
+				inline=False
+			)
 			return embed
 
 		case 'admin':
